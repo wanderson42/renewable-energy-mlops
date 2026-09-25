@@ -1,0 +1,40 @@
+name: CI Pipeline - MLOps
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout do código
+      uses: actions/checkout@v4
+
+    - name: Configurar Python 3.14
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.14" # Alinhado com o Dockerfile e ambiente local
+
+    - name: Instalar Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: 1.8.2
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Cache das dependências do Poetry
+      uses: actions/cache@v4
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+
+    - name: Instalar dependências (incluindo Tox)
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      run: poetry install --no-interaction --no-root
+
+    - name: Executar Suíte de Testes (Tox)
+      run: poetry run tox -e py314
