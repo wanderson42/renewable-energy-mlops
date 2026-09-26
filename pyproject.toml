@@ -2,7 +2,7 @@
 name = "energy-mlops"
 version = "0.1.0"
 description = ""
-authors = ["Wanderson wlferreira@alumni.usp.br"]
+authors = ["Wanderson <wlferreira@alumni.usp.br>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
