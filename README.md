@@ -39,8 +39,8 @@ renewable-energy-mlops/
 │       └── service/                    # Camada de Serviço (Model Serving)
 │           ├── main.py                 # Endpoint assíncrono FastAPI (/predict/batch)
 │           └── schema.py               # Contratos Pydantic para validação HTTP
-└── tests/                      
-    └── __init__.py
+└── tests/
+    ├── __init__.py
     ├── conftest.py                # Fixtures globais do pytest 
     ├── test_config.py             # Testes de variáveis de ambiente e Pydantic Settings
     ├── data/
