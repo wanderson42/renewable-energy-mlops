@@ -8,16 +8,17 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Versão fixada para remover o aviso do ubuntu-latest
 
     steps:
     - name: Checkout do código
       uses: actions/checkout@v4
 
     - name: Configurar Python 3.14
+      id: setup-python # ADICIONADO: Necessário para a chave de cache funcionar
       uses: actions/setup-python@v5
       with:
-        python-version: "3.14" # Alinhado com o Dockerfile e ambiente local
+        python-version: "3.14"
 
     - name: Instalar Poetry
       uses: snok/install-poetry@v1
@@ -27,6 +28,7 @@ jobs:
         virtualenvs-in-project: true
 
     - name: Cache das dependências do Poetry
+      id: cached-poetry-dependencies # ADICIONADO: Necessário para o 'if' abaixo funcionar
       uses: actions/cache@v4
       with:
         path: .venv
