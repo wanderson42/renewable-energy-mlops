@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: energy-api
+  labels:
+    app: energy-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: energy-api
+  template:
+    metadata:
+      labels:
+        app: energy-api
+    spec:
+      containers:
+        - name: api
+          image: energy-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow:5000"
+            - name: RUSTFS_ENDPOINT
+              value: "http://rustfs:9000"
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: "http://rustfs:9000"
+            - name: RUSTFS_ROOT_USER
+              value: "{{ .Values.rustfs.rootUser }}"
+            - name: RUSTFS_ROOT_PASSWORD
+              value: "{{ .Values.rustfs.rootPassword }}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: energy-api
+spec:
+  type: ClusterIP
+  selector:
+    app: energy-api
+  ports:
+    - port: 8000

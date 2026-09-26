@@ -1,0 +1,40 @@
+# Ambientes e Variáveis Secretas
+.env
+lista_ordenada_de_comandos_bash.txt
+
+# Dados e Artefatos Locais
+data/
+shap_importance.csv
+.agents/
+*.log
+
+# Logs
+.ports.log
+*.log
+.prefect.log
+.dashboard.log
+
+# Python / Compilados
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs e Editores
+.vscode/
+.idea/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+*.png
+*.jpg
+
+# Bancos de Dados locais e Caches (Prefect, pytest, etc)
+.cache.sqlite
+.pytest_cache/
+.ruff_cache/
+
+# Dados Locais (evita subir arquivos .parquet pesados para o GitHub)
+# O Data Lake oficial agora é o MinIO no Kubernetes
+data/*.parquet
+data/*.csv

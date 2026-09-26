@@ -1,0 +1,11 @@
+# helm/values.yaml
+rustfs:
+  rootUser: ""
+  rootPassword: ""
+  apiPort: 9000
+  consolePort: 9001
+
+postgres:
+  user: ""
+  password: ""
+  db: ""

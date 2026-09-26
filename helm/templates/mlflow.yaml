@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+spec:
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+      - name: mlflow
+        image: ghcr.io/mlflow/mlflow:v3.16.1-full
+        command:
+          - sh
+          - -c
+          - |
+            pip install --quiet psycopg2-binary boto3 && \
+            mlflow server \
+              --backend-store-uri postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@postgres:5432/{{ .Values.postgres.db }} \
+              --default-artifact-root s3://mlflow-artifacts/ \
+              --host 0.0.0.0 \
+              --port 5000 \
+              --allowed-hosts "*"
+        env:
+        - name: MLFLOW_PORT
+          value: "5000"
+        - name: MLFLOW_ALLOWED_HOSTS
+          value: "*"  
+        - name: MLFLOW_SERVER_ALLOWED_HOSTS
+          value: "*"          
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: "http://rustfs:9000"
+        - name: AWS_ACCESS_KEY_ID
+          value: "{{ .Values.rustfs.rootUser }}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "{{ .Values.rustfs.rootPassword }}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+spec:
+  type: NodePort
+  ports:
+  - port: 5000
+    targetPort: 5000
+    nodePort: 30500
+  selector:
+    app: mlflow
