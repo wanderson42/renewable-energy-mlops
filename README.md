@@ -1,6 +1,6 @@
-O repositório foi estruturado seguindo os padrões modernos de engenharia de software e MLOps. 
-A gestão de dependências é feita via Poetry e o pacote principal é instalável localmente (`energy_mlops`).
+## O repositório foi estruturado seguindo os padrões modernos de engenharia de software e MLOps. A gestão de dependências é feita via **Poetry** e o pacote principal é instalável localmente (`energy_mlops`).
 
+```text
 renewable-energy-mlops/
 ├── Dockerfile                          # Configuração da imagem do serviço FastAPI
 ├── Makefile                            # Automação (ports, stop-ports, test-opt, test-train)
@@ -55,11 +55,13 @@ renewable-energy-mlops/
         ├── test_schema.py         # Testes do Pydantic (API REST)
         └── test_main.py           # Testes de integração da FastAPI (rotas HTTP)
 
+```
 
 
 
+## Diagrama arquitetural com o host, o gerenciamento de rede e o cluster Kubernetes com os Volumes Persistentes (PVCs):
 
-Diagrama arquitetural com o host, o gerenciamento de rede e o cluster Kubernetes com os Volumes Persistentes (PVCs):
+```text
 
  [ Streamlit Dashboard ]      ┌──────────────────────────────────────────────────────────────────────────────┐
  [ (app.py via Poetry) ]      │                                MÁQUINA HOST (Alienware-16)                   │
@@ -101,3 +103,5 @@ Diagrama arquitetural com o host, o gerenciamento de rede e o cluster Kubernetes
 │             │ └─────────────────────────┘ │                                                                   │
 │             └─────────────────────────────┘                                                                   │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+```
