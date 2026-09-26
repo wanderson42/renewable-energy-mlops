@@ -97,7 +97,7 @@ renewable-energy-mlops/
 │             │ (Data Lake / Model Registry)│                                                                   │
 │             │                             │                                                                   │
 │             │ ┌─────────────────────────┐ │  (PVC)                                                            │
-│             │ │ CONTAINER: minio        │─┼──────────▶ [ rustfs-pvc:5Gi ]                                     │
+│             │ │ CONTAINER: rustfs       │─┼──────────▶ [ rustfs-pvc:5Gi ]                                     │
 │             │ │ ▹ :9000 (S3 API)        │ │            (Garante retenção do Data Lake e Modelos)              │
 │             │ └─────────────────────────┘ │                                                                   │
 │             └─────────────────────────────┘                                                                   │
