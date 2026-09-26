@@ -8,14 +8,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04 # Versão fixada para remover o aviso do ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout do código
       uses: actions/checkout@v4
 
     - name: Configurar Python 3.14
-      id: setup-python # ADICIONADO: Necessário para a chave de cache funcionar
+      id: setup-python
       uses: actions/setup-python@v5
       with:
         python-version: "3.14"
@@ -28,15 +28,14 @@ jobs:
         virtualenvs-in-project: true
 
     - name: Cache das dependências do Poetry
-      id: cached-poetry-dependencies # ADICIONADO: Necessário para o 'if' abaixo funcionar
+      id: cached-poetry-dependencies
       uses: actions/cache@v4
       with:
         path: .venv
-        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+        key: venv-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
 
-    - name: Instalar dependências (incluindo Tox)
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      run: poetry install --no-interaction --no-root
+    - name: Instalar dependências e pacote do projeto
+      run: poetry install --no-interaction
 
     - name: Executar Suíte de Testes (Tox)
       run: poetry run tox -e py314
