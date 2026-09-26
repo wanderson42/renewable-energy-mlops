@@ -93,11 +93,11 @@ renewable-energy-mlops/
 │                         │ Lê modelo @champion                 │ Salva Artefatos                ▼              │
 │                         ▼                                     │                      [ postgres-pvc:2Gi ]     │
 │             ┌─────────────────────────────┐                   │                                               │
-│             │ POD: minio-xxx              │◀──────────────────┘                                               │
+│             │ POD: rustfs-xxx             │◀──────────────────┘                                               │
 │             │ (Data Lake / Model Registry)│                                                                   │
 │             │                             │                                                                   │
 │             │ ┌─────────────────────────┐ │  (PVC)                                                            │
-│             │ │ CONTAINER: minio        │─┼──────────▶ [ minio-pvc:5Gi ]                                      │
+│             │ │ CONTAINER: minio        │─┼──────────▶ [ rustfs-pvc:5Gi ]                                     │
 │             │ │ ▹ :9000 (S3 API)        │ │            (Garante retenção do Data Lake e Modelos)              │
 │             │ └─────────────────────────┘ │                                                                   │
 │             └─────────────────────────────┘                                                                   │
