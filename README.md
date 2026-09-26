@@ -1,4 +1,4 @@
-## O repositório foi estruturado seguindo os padrões modernos de engenharia de software e MLOps. A gestão de dependências é feita via **Poetry** e o pacote principal é instalável localmente (`energy_mlops`).
+### O repositório foi estruturado seguindo os padrões modernos de engenharia de software e MLOps. A gestão de dependências é feita via **Poetry** e o pacote principal é instalável localmente (`energy_mlops`).
 
 ```text
 renewable-energy-mlops/
@@ -58,8 +58,7 @@ renewable-energy-mlops/
 ```
 
 
-
-## Diagrama arquitetural com o host, o gerenciamento de rede e o cluster Kubernetes com os Volumes Persistentes (PVCs):
+### Diagrama arquitetural com o host, o gerenciamento de rede e o cluster Kubernetes com os Volumes Persistentes (PVCs):
 
 ```text
 
