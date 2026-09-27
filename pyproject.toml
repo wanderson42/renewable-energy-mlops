@@ -49,4 +49,6 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",
+    "ignore::PendingDeprecationWarning:shap.*",
+    "ignore::DeprecationWarning:shap.*"
 ]

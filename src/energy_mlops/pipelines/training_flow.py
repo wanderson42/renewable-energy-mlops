@@ -188,18 +188,37 @@ def evaluate_and_promote(challenger_run_id: str, challenger_mae: float):
             print(f"⚠️ AVISO: Não foi possível notificar a API para Hot-Reload automático: {e}")
 
 
+# ==========================================
+# REGISTRY DE DEPENDÊNCIAS
+# ==========================================
+TRAINER_REGISTRY = {
+    "stacking": default_stacking_trainer,
+}
+
+OPTIMIZER_REGISTRY = {
+    "stacking": default_stacking_optimizer,
+    "none": None
+}
+
 # ==============================================================================
 # FLUXO PRINCIPAL PREFECT (ORQUESTRADOR CT)
 # ==============================================================================
 @flow(name="Pipeline de Treinamento Contínuo - Energia Eólica Bahia")
 def continuous_training_pipeline(
-    trainer_algorithm: ModelTrainer = default_stacking_trainer,
-    optimizer_algorithm: ModelOptimizer | None = default_stacking_optimizer
+    trainer_name: str = "stacking",
+    optimizer_name: str = "stacking"
 ):
     """
     Orquestrador Agnóstico. Por padrão, utiliza o Stacking Ensemble, mas 
     pode receber qualquer algoritmo que respeite o TrainerContract.
     """
+    # Resgata as funções do Registry usando as strings
+    trainer_algorithm = TRAINER_REGISTRY.get(trainer_name)
+    optimizer_algorithm = OPTIMIZER_REGISTRY.get(optimizer_name)
+
+    if not trainer_algorithm:
+        raise ValueError(f"Trainer '{trainer_name}' não encontrado no Registry.")
+
     logger.info("🚀 Iniciando Pipeline de Treinamento Contínuo (CT)...")
 
     df_train, df_test, train_file, test_file = fetch_expanding_window_data()
