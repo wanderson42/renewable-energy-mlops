@@ -30,7 +30,7 @@ def historical_backfill_flow(
     
     monthly_dfs: list[pd.DataFrame] = []
 
-    now_utc = datetime.now(tz=timezone.utc)  # noqa: UP017
+    now_utc = datetime.now(tz=timezone.utc)
     current_year = now_utc.year
     current_month = now_utc.month
 

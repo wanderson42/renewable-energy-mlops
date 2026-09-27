@@ -3,7 +3,7 @@
 lista_ordenada_de_comandos_bash.txt
 
 # Dados e Artefatos Locais
-data/
+#data/
 shap_importance.csv
 .agents/
 *.log

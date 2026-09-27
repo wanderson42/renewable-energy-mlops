@@ -1,36 +1,24 @@
-import argparse
-import os
-
 import lightgbm as lgb
 import mlflow
+import mlflow.data
+import numpy as np
 import optuna
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBRegressor
 
 from energy_mlops.config import settings
 
 
-def load_optimization_data(train_file: str):
-    train_path = f"s3://{settings.MINIO_BUCKET}/gold/{train_file}"
-    print(f"📖 A ler dados de Treino para Otimização: {train_path}")
-    
-    df_train = pd.read_parquet(train_path, storage_options=settings.storage_options)
-    
-    if "date" in df_train.columns:
-        df_train["date"] = pd.to_datetime(df_train["date"])
-        df_train.sort_values("date", inplace=True)
-        df_train.reset_index(drop=True, inplace=True)
-
+def prepare_optimization_data(df_train: pd.DataFrame):
+    """Separa as features e o target a partir do DataFrame fornecido pelo orquestrador."""
     drop_cols = ["wind_generation_mw", "target_fc", "date", "capacidade_mw"]
     feature_cols = [c for c in df_train.columns if c not in drop_cols]
-
     return df_train[feature_cols], df_train["target_fc"]
 
-
-def objective(trial, X, y):
+def objective(trial, X, y, n_splits):
     lgb_params = {
         "n_estimators": trial.suggest_int("lgb_n_estimators", 100, 500),
         "learning_rate": trial.suggest_float("lgb_learning_rate", 0.01, 0.1, log=True),
@@ -62,8 +50,9 @@ def objective(trial, X, y):
         "n_jobs": -1
     }
 
-    tscv = TimeSeriesSplit(n_splits=3)
+    tscv = TimeSeriesSplit(n_splits=n_splits)
     oof_maes = []
+    oof_r2s = []
 
     for train_idx, val_idx in tscv.split(X):
         X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
@@ -82,23 +71,36 @@ def objective(trial, X, y):
         pred_rf = model_rf.predict(X_val)
 
         pred_ensemble = (pred_lgb + pred_xgb + pred_rf) / 3.0
+        
         fold_mae = mean_absolute_error(y_val, pred_ensemble)
+        fold_r2 = r2_score(y_val, pred_ensemble)
+        
         oof_maes.append(fold_mae)
+        oof_r2s.append(fold_r2)
 
-    return sum(oof_maes) / len(oof_maes)
-
-
-def run_optimization(train_file: str, n_trials: int = 20):
-    X_train, y_train = load_optimization_data(train_file)
+    mean_mae = float(np.mean(oof_maes))
+    std_mae = float(np.std(oof_maes))
+    mean_r2 = float(np.mean(oof_r2s))
     
-    print(f"🚀 Iniciando otimização do Ensemble via Optuna com {n_trials} trials...")
+    trial.set_user_attr("cv_mae_std", std_mae)
+    trial.set_user_attr("cv_r2_mean", mean_r2)
+
+    return mean_mae
+
+# Assinatura atualizada para receber o train_file
+def run_optimization(df_train: pd.DataFrame, train_file: str, n_trials: int = 20, n_splits: int = 3) -> dict:
+    """
+    Contrato MLOps: Recebe o df_train e seu nome original do orquestrador, 
+    roda Optuna e salva o melhor JSON e a linhagem dos dados no MLflow.
+    """
+    X_train, y_train = prepare_optimization_data(df_train)
+    
+    print(f"🚀 Iniciando otimização do Ensemble via Optuna com {n_trials} trials e {n_splits} CV splits...")
     study = optuna.create_study(direction="minimize", study_name="Ensemble_Optimization")
-    study.optimize(lambda trial: objective(trial, X_train, y_train), n_trials=n_trials)
+    study.optimize(lambda trial: objective(trial, X_train, y_train, n_splits), n_trials=n_trials)
 
-    print("\n✅ Otimização concluída!")
-    print(f"🏆 Melhor MAE (Target FC) validado no tempo: {study.best_value:.5f}")
-    
-    best_params_raw = study.best_params
+    best_trial = study.best_trial
+    best_params_raw = best_trial.params
     
     final_params = {
         "lgb_params": {k.replace("lgb_", ""): v for k, v in best_params_raw.items() if k.startswith("lgb_")},
@@ -106,42 +108,19 @@ def run_optimization(train_file: str, n_trials: int = 20):
         "rf_params": {k.replace("rf_", ""): v for k, v in best_params_raw.items() if k.startswith("rf_")}
     }
 
-    # ============Rastreamento pelo MLflow======================
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     experiment_name = "wind_power_optimization_bahia"
     mlflow.set_experiment(experiment_name)
     
     with mlflow.start_run(run_name="Optuna_Best_Trial"):
-        mlflow.log_metric("best_cv_mae", study.best_value)
-        # Salva o dicionário como um arquivo JSON diretamente no MinIO!
+        # 🟢 RASTREABILIDADE INSERIDA:
+        mlflow.log_input(mlflow.data.from_pandas(df=X_train, source=f"s3://{settings.RUSTFS_BUCKET}/gold/{train_file}", name=train_file.replace(".parquet", "")), context="training")
+        
+        mlflow.log_params(best_params_raw)
+        mlflow.log_param("cv_n_splits", n_splits)
+        mlflow.log_metric("best_cv_mae_mean", best_trial.value)
+        mlflow.log_metric("best_cv_mae_std", best_trial.user_attrs.get("cv_mae_std", 0.0))
         mlflow.log_dict(final_params, "best_ensemble_params.json")
         
-    print("\n📊 Resumo dos Hiperparâmetros Otimizados:")
-    print(f"   🟢 LightGBM: {final_params['lgb_params']}")
-    print(f"   🔵 XGBoost: {final_params['xgb_params']}")
-    print(f"   🟣 RandomForest: {final_params['rf_params']}")
-    print("💾 Hiperparâmetros rastreados e salvos com sucesso no MLflow/MinIO!")
-
-
-if __name__ == "__main__":
-    os.environ["AWS_ACCESS_KEY_ID"] = settings.MINIO_ROOT_USER
-    os.environ["AWS_SECRET_ACCESS_KEY"] = settings.MINIO_ROOT_PASSWORD
-    os.environ["MLFLOW_S3_ENDPOINT_URL"] = settings.MINIO_ENDPOINT
-    os.environ["AWS_ENDPOINT_URL"] = settings.MINIO_ENDPOINT
-
-    parser = argparse.ArgumentParser(description="Otimização Optuna para LightGBM, XGBoost e RandomForest.")
-    parser.add_argument("--train-file", type=str, default="dataset_renewable_energy_2024_1_2025_12.parquet")
-    parser.add_argument("--trials", type=int, default=20)
-    args = parser.parse_args()
-
-    run_optimization(args.train_file, args.trials)
-
-'''
-# ==================================================================
-# EXEMPLOS DE EXECUÇÃO VIA TERMINAL BASH
-# ==================================================================
-
-poetry run python src/energy_mlops/models/optimize.py \
-    --train-file dataset_renewable_energy_2024_1_2025_12.parquet \
-    --trials 30
-'''     
+    print("💾 Hiperparâmetros otimizados salvos com sucesso no MLflow!")
+    return final_params

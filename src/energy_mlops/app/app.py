@@ -63,7 +63,7 @@ st.markdown(
 # FUNÇÕES DE CACHE E EXTRAÇÃO DE DADOS
 # ==========================================
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60)
 def load_shap_artifacts_from_mlflow():
     """Busca dinamicamente os artefatos de SHAP e o resumo do modelo @champion no MLflow."""
     try:
@@ -297,7 +297,24 @@ if run_prediction or "last_response" in st.session_state:
             caption_text = f"Exibindo diagnósticos SHAP extraídos do modelo **`@champion`** (Versão {version_or_err})"
 
         st.caption(f"{caption_text} via MLflow/RustFS.")
+        # Explicabilidade & Transparência do Modelo (SHAP)
         st.info("💡 **Observação:** Utilize a barra de ferramentas no canto superior direito de cada imagem para dar zoom (+ e -), arrastar (Pan) e restaurar o tamanho original.")
+
+        # ==========================================
+        # TRADUÇÃO PARA VISÃO DE NEGÓCIOS
+        # ==========================================
+        if model_summary:
+            metrics = model_summary.get("metrics", {})
+            nmae_pct = metrics.get("oot_nmae_pct", 0.0)
+            
+            if nmae_pct > 0:
+                forecast_accuracy = 100 - nmae_pct
+                st.success(
+                    f"💼 **Visão Executiva (Taxa de Acerto Global): {forecast_accuracy:.1f}%**\n\n"
+                    f"O modelo atual apresenta um erro médio normalizado (nMAE) de apenas {nmae_pct:.2f}%. "
+                    f"Isso significa que, na média de validação OOT, as nossas estimativas de geração de energia eólica "
+                    f"refletem a realidade com **{forecast_accuracy:.1f}% de precisão global**."
+                )
 
         tab_summary, tab_dependence, tab_waterfall, tab_csv = st.tabs([
             "📊 Summary Plot",

@@ -58,6 +58,21 @@ async def health_check():
     return {"status": "healthy", "model_loaded": True}
 
 
+@app.post("/reload-model", status_code=200)
+async def reload_model():
+    """Endpoint de Hot-Reload: Recarrega o modelo @champion mais recente do MLflow para a RAM."""
+    model_uri = f"models:/{MODEL_NAME}@champion"
+    print(f"🔄 Solicitação de Hot-Reload recebida. Baixando {model_uri}...")
+    try:
+        model_cache["champion"] = mlflow.pyfunc.load_model(model_uri)
+        print("✅ Modelo @champion atualizado com sucesso na memória!")
+        return {"status": "success", "message": "Modelo recarregado com sucesso na memória."}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha ao recarregar o modelo: {e!s}",
+        )
+
 @app.post("/predict/batch", response_model=list[PredictionResponse])
 def predict_batch(payload: BatchPredictionRequest):
     model = model_cache.get("champion")

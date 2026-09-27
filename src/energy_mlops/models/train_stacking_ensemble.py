@@ -1,6 +1,4 @@
-import argparse
 import json
-import os
 import tempfile
 
 import lightgbm as lgb
@@ -11,7 +9,6 @@ import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import shap
-from mlflow.exceptions import MlflowException
 from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
 from sklearn.ensemble import RandomForestRegressor, StackingRegressor
@@ -44,7 +41,6 @@ def load_best_ensemble_params_from_mlflow() -> tuple[dict, dict, dict]:
     
     experiment = client.get_experiment_by_name(opt_exp_name)
     if experiment:
-        # Busca a última run executada com sucesso na Otimização
         runs = client.search_runs(
             experiment_ids=[experiment.experiment_id],
             order_by=["start_time DESC"],
@@ -54,7 +50,6 @@ def load_best_ensemble_params_from_mlflow() -> tuple[dict, dict, dict]:
             run_id = runs[0].info.run_id
             print(f"☁️ A baixar parâmetros otimizados do MLflow (Run ID: {run_id})...")
             try:
-                # Usa diretório temporário para baixar o artefato (não suja o disco)
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     local_path = client.download_artifacts(run_id, "best_ensemble_params.json", tmp_dir)
                     with open(local_path, "r") as f:
@@ -79,21 +74,8 @@ def load_best_ensemble_params_from_mlflow() -> tuple[dict, dict, dict]:
     return default_lgb, default_xgb, default_rf
 
 
-def load_data(train_file: str, test_file: str) -> tuple:
-    train_path = f"s3://{settings.RUSTFS_BUCKET}/gold/{train_file}"
-    test_path = f"s3://{settings.RUSTFS_BUCKET}/gold/{test_file}"
-
-    print(f"📖 A ler Treino de: {train_path}")
-    df_train = pd.read_parquet(train_path, storage_options=settings.storage_options)
-    print(f"📖 A ler Teste (OOT Jan-Ago 2026) de: {test_path}")
-    df_test = pd.read_parquet(test_path, storage_options=settings.storage_options)
-
-    for df in [df_train, df_test]:
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"])
-            df.sort_values("date", inplace=True)
-            df.reset_index(drop=True, inplace=True)
-
+def prepare_features(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tuple:
+    """Separa as features e targets dos DataFrames fornecidos pelo Prefect."""
     drop_cols = ["wind_generation_mw", "target_fc", "date", "capacidade_mw"]
     feature_cols = [c for c in df_train.columns if c not in drop_cols]
 
@@ -103,8 +85,12 @@ def load_data(train_file: str, test_file: str) -> tuple:
     )
 
 
-def train_ensemble(train_file: str, test_file: str):
-    X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = load_data(train_file, test_file)
+def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, train_file: str, test_file: str) -> tuple[str, float]:
+    """
+    Treina o modelo, registra todos os metadados (SHAP, trusted_types, métricas ricas) 
+    e retorna o ID da Run e o MAE para o orquestrador (Prefect).
+    """
+    X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = prepare_features(df_train, df_test)
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     experiment_name = "wind_power_forecasting_bahia"
@@ -114,10 +100,11 @@ def train_ensemble(train_file: str, test_file: str):
         client.restore_experiment(experiment.experiment_id)
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name="Stacking_LGB_XGB_RF_Bahia"):
+    with mlflow.start_run(run_name="Stacking_LGB_XGB_RF_Bahia") as run:
+        run_id = run.info.run_id
+        
         mlflow.log_input(mlflow.data.from_pandas(df=X_train, source=f"s3://{settings.RUSTFS_BUCKET}/gold/{train_file}", name=train_file.replace(".parquet", "")), context="training")
         mlflow.log_input(mlflow.data.from_pandas(df=X_test, source=f"s3://{settings.RUSTFS_BUCKET}/gold/{test_file}", name=test_file.replace(".parquet", "")), context="testing")
-
         num_features_challenger = len(X_train.columns)
         mlflow.log_param("num_features", num_features_challenger)
 
@@ -166,10 +153,14 @@ def train_ensemble(train_file: str, test_file: str):
         mlflow.log_metric("train_mae_mw", train_mae_mw)
         mlflow.log_metric("train_nmae_pct", train_nmae_pct)
         mlflow.log_metric("train_mae_fc_pct", train_mae_fc_pct)
+        # Mantendo os nomes exatos originais
         mlflow.log_metric("oot_mae_mw_2026", test_mae_mw)
         mlflow.log_metric("oot_nmae_pct_2026", test_nmae_pct)
         mlflow.log_metric("oot_mae_fc_pct_2026", test_mae_fc_pct)
         mlflow.log_metric("oot_r2_score_2026", test_r2)
+        
+        # Log extra genérico para garantir que o Quality Gate do Prefect e outros processos não quebrem
+        mlflow.log_metric("oot_mae_mw", test_mae_mw)
 
         print("✅ Treino do Stacking Ensemble concluído!")
         print(f"📊 Desempenho TREINO: MAE: {train_mae_mw:.2f} MW | nMAE: {train_nmae_pct:.2f}% | MAE_FC: {train_mae_fc_pct:.2f}%")
@@ -204,15 +195,15 @@ def train_ensemble(train_file: str, test_file: str):
             }
         }
 
-        # Salva o JSON na raiz dos artefatos
         mlflow.log_dict(model_summary, "model_summary.json")
         
-        # Tags de rastreabilidade na UI do MLflow
         arch_str = f"{type(ensemble).__name__} ({', '.join(meta_weights.keys())}) -> {type(ensemble.final_estimator_).__name__}"
         mlflow.set_tag("architecture_str", arch_str)
         mlflow.set_tag("meta_weights_json", json.dumps(meta_weights))
 
-        # Explicabilidade SHAP
+        # ==============================================================================
+        # 🔍 EXPLICABILIDADE SHAP (Restaurada)
+        # ==============================================================================
         print("🔍 Gerando SHAP Values e Gráficos Explicativos...")
         lgbm_instance = ensemble.named_estimators_["lgbm"]
         explainer = shap.TreeExplainer(lgbm_instance)
@@ -236,10 +227,13 @@ def train_ensemble(train_file: str, test_file: str):
         plt.close(fig)
 
         fig, ax = plt.subplots(figsize=(8, 5))
-        shap.dependence_plot("wind_temp_ratio", shap_values, X_sample, ax=ax, show=False)
-        plt.title("Curva de Resposta: Wind-Temp Ratio vs Impacto no FC", fontsize=14, pad=20)
-        fig.savefig("shap_dependence.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        # Validar se wind_temp_ratio existe no dataset (pode gerar erro dependendo da amostra)
+        if "wind_temp_ratio" in X_sample.columns:
+            shap.dependence_plot("wind_temp_ratio", shap_values, X_sample, ax=ax, show=False)
+            plt.title("Curva de Resposta: Wind-Temp Ratio vs Impacto no FC", fontsize=14, pad=20)
+            fig.savefig("shap_dependence.png", dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            mlflow.log_artifact("shap_dependence.png", "explainability")
         
         fig = plt.figure(figsize=(10, 6))
         shap.plots.waterfall(explanation[0], show=False)
@@ -247,10 +241,12 @@ def train_ensemble(train_file: str, test_file: str):
         fig.savefig("shap_waterfall.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-        for img in ["shap_summary.png", "shap_dependence.png", "shap_waterfall.png"]:
-            mlflow.log_artifact(img, "explainability")
+        mlflow.log_artifact("shap_summary.png", "explainability")
+        mlflow.log_artifact("shap_waterfall.png", "explainability")
 
-        # Registro do Modelo
+        # ==============================================================================
+        # 🛡️ REGISTRO DO MODELO COM TRUSTED TYPES
+        # ==============================================================================
         trusted_types = [
             "collections.OrderedDict", "lightgbm.basic.Booster", "lightgbm.sklearn.LGBMRegressor",
             "sklearn.tree._tree.Tree", "sklearn.utils._bunch.Bunch", "xgboost.core.Booster",
@@ -261,53 +257,12 @@ def train_ensemble(train_file: str, test_file: str):
         signature = infer_signature(X_test, test_preds_fc)
         model_name = "ensemble_lgb_xgb_rf_bahia"
 
-        model_info = mlflow.sklearn.log_model(
+        mlflow.sklearn.log_model(
             sk_model=ensemble,
             name="model",
             registered_model_name=model_name,
             skops_trusted_types=trusted_types,
             signature=signature,
         )
-        challenger_version = model_info.registered_model_version
-
-        # Quality Gate
-        print("\n🛡️ INICIANDO QUALITY GATE (Champion vs Challenger)...")
-        promote_to_champion = False
-        try:
-            champion_info = client.get_model_version_by_alias(model_name, "champion")
-            champ_run = client.get_run(champion_info.run_id)
-            champ_mae = champ_run.data.metrics.get("oot_mae_mw_2026")
-            if test_mae_mw < champ_mae:
-                print("🎉 APROVADO! Challenger superou o Champion.")
-                promote_to_champion = True
-            else:
-                print("❌ REPROVADO! Modelo degradou.")
-        except MlflowException:
-            print("ℹ️ Nenhum '@champion' encontrado. Promovendo primeiro Campeão!")
-            promote_to_champion = True
-
-        if promote_to_champion:
-            client.set_registered_model_alias(model_name, "champion", challenger_version)
-
-if __name__ == "__main__":
-    os.environ["AWS_ACCESS_KEY_ID"] = settings.RUSTFS_ROOT_USER
-    os.environ["AWS_SECRET_ACCESS_KEY"] = settings.RUSTFS_ROOT_PASSWORD
-    os.environ["MLFLOW_S3_ENDPOINT_URL"] = settings.RUSTFS_ENDPOINT
-    os.environ["AWS_ENDPOINT_URL"] = settings.RUSTFS_ENDPOINT
-
-    parser = argparse.ArgumentParser(description="Treino do Stacking Ensemble (LGB+XGB+RF).")
-    parser.add_argument("--train-file", type=str, default="dataset_renewable_energy_2024_1_2025_12.parquet")
-    parser.add_argument("--test-file", type=str, default="dataset_renewable_energy_2026_1_2026_8.parquet")
-    args = parser.parse_args()
-
-    train_ensemble(args.train_file, args.test_file)
-
-'''
-# ==================================================================
-# EXEMPLOS DE EXECUÇÃO VIA TERMINAL BASH
-# ==================================================================
-
-poetry run python src/energy_mlops/models/train_ensemble.py \
-    --train-file dataset_renewable_energy_2024_01_2025_12.parquet \
-    --test-file dataset_renewable_energy_2026_01_2026_08.parquet
-'''     
+        
+        return run_id, float(test_mae_mw)
