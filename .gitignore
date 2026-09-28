@@ -43,3 +43,5 @@ __pycache__/
 # O Data Lake oficial agora é o MinIO no Kubernetes
 data/*.parquet
 data/*.csv
+
+helm/values_secrets.yamlhelm/values-secrets.yaml

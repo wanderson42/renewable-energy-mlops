@@ -9,3 +9,11 @@ postgres:
   user: ""
   password: ""
   db: ""
+
+api:
+  image:
+    repository: ghcr.io/wanderson42/renewable-energy-mlops
+    tag: latest
+    pullPolicy: Always # Força o Kubernetes a ir à nuvem buscar a versão mais recente
+  service:
+    port: 8000

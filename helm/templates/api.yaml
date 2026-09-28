@@ -16,8 +16,8 @@ spec:
     spec:
       containers:
         - name: api
-          image: energy-api:latest
-          imagePullPolicy: IfNotPresent
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           env:
