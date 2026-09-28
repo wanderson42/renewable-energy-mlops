@@ -1,0 +1,30 @@
+# Git e GitHub
+.git
+.github
+.gitignore
+
+# Ambientes virtuais e cache
+__pycache__/
+.pytest_cache/
+.tox/
+.ruff_cache/
+.venv/
+.agents/
+
+# Logs e arquivos Markdown
+*.log
+*.md
+lista_ordenada_de_comandos_bash.txt
+
+# Pastas que a API não usa em produção
+notebooks/
+helm/
+tests/
+scripts/
+data/
+
+# Artefatos gerados
+*.png
+*.jpg
+*.csv
+*.sqlite

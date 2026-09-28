@@ -29,6 +29,11 @@ __pycache__/
 *.png
 *.jpg
 
+# EXCEÇÃO: Permitir o relatório e as imagens do portfólio
+!notebooks/*.ipynb
+!notebooks/*.png
+!notebooks/*.jpg
+
 # Bancos de Dados locais e Caches (Prefect, pytest, etc)
 .cache.sqlite
 .pytest_cache/
