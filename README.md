@@ -1,10 +1,11 @@
 # Renewable Energy MLOps — Wind Power Forecasting
 
-[![CI/CD](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml/badge.svg)](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml)
+[![Release](https://img.shields.io/github/v/release/wanderson42/renewable-energy-mlops)](https://github.com/wanderson42/renewable-energy-mlops/releases/latest)
+[![CI](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml/badge.svg)](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Poetry](https://img.shields.io/badge/Poetry-2.x-60A5FA?logo=poetry&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-75%20passed-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-yellow)
+[![License](https://img.shields.io/github/license/wanderson42/renewable-energy-mlops)](LICENSE)
 
 Sistema MLOps end-to-end para **previsão horária Day-Ahead de geração eólica na Bahia**, cobrindo ingestão de dados, contratos de features, validação temporal, otimização de hiperparâmetros, experiment tracking, Model Registry, explicabilidade, monitoramento de drift, Continuous Training, model serving e operação local em Kubernetes.
 
