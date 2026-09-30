@@ -2,11 +2,79 @@
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from energy_mlops.pipelines.training_flow import (
     continuous_training_pipeline,
+    resolve_metric,
 )
 
+
+def test_resolve_metric_prefers_canonical_name():
+    metrics = {
+        "oot_nmae_pct": 7.1,
+        "oot_nmae_pct_2026": 99.0,
+    }
+
+    result = resolve_metric(
+        metrics,
+        "oot_nmae_pct",
+    )
+
+    assert result == 7.1
+
+
+def test_resolve_metric_accepts_single_legacy_year():
+    metrics = {
+        "oot_nmae_pct_2026": 7.04,
+    }
+
+    result = resolve_metric(
+        metrics,
+        "oot_nmae_pct",
+    )
+
+    assert result == 7.04
+
+
+def test_resolve_metric_is_year_agnostic():
+    metrics = {
+        "oot_nmae_pct_2031": 6.8,
+    }
+
+    result = resolve_metric(
+        metrics,
+        "oot_nmae_pct",
+    )
+
+    assert result == 6.8
+
+
+def test_resolve_metric_rejects_ambiguous_legacy_metrics():
+    metrics = {
+        "oot_nmae_pct_2025": 7.2,
+        "oot_nmae_pct_2026": 7.0,
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="múltiplas variantes",
+    ):
+        resolve_metric(
+            metrics,
+            "oot_nmae_pct",
+        )
+
+
+def test_resolve_metric_raises_when_required_metric_missing():
+    with pytest.raises(
+        RuntimeError,
+        match="Métrica obrigatória",
+    ):
+        resolve_metric(
+            {},
+            "oot_nmae_pct",
+        )
 
 def dummy_trainer(
     df_train,

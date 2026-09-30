@@ -507,3 +507,40 @@ def test_reload_model_does_not_leave_partial_state(
         model_metadata_cache["champion"]
         == old_metadata
     )
+
+def test_resolve_metric_uses_canonical_metric():
+    metrics = {
+        "oot_nmae_pct": 6.9,
+    }
+
+    assert (
+        service_main.resolve_metric(
+            metrics,
+            "oot_nmae_pct",
+        )
+        == 6.9
+    )
+
+
+def test_resolve_metric_accepts_legacy_year():
+    metrics = {
+        "oot_nmae_pct_2026": 7.04,
+    }
+
+    assert (
+        service_main.resolve_metric(
+            metrics,
+            "oot_nmae_pct",
+        )
+        == 7.04
+    )
+
+
+def test_resolve_metric_returns_none_when_absent():
+    assert (
+        service_main.resolve_metric(
+            {},
+            "oot_nmae_pct",
+        )
+        is None
+    )

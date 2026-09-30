@@ -1,7 +1,10 @@
 import os
+import re
+from collections.abc import Mapping
+from typing import Any
 
-import mlflow.tracking
 import pandas as pd
+import requests
 from loguru import logger
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
@@ -16,14 +19,26 @@ from energy_mlops.models.interfaces import (
 from energy_mlops.models.optimize_stacking_ensemble import (
     run_optimization as default_stacking_optimizer,
 )
-
-# Importando a função de treino atual e a apelidamos para injetá-la como padrão
 from energy_mlops.models.train_stacking_ensemble import (
     train_stacking_regressor as default_stacking_trainer,
 )
-from energy_mlops.pipelines.utils import save_dataset_to_lake_or_local
+from energy_mlops.pipelines.utils import (
+    save_dataset_to_lake_or_local,
+)
 
-# Injeção global de credenciais S3/RustFS para boto3 e MLflow Artifacts
+# ==============================================================================
+# CONFIGURAÇÃO
+# ==============================================================================
+
+MODEL_NAME = "ensemble_lgb_xgb_rf_bahia"
+MODEL_ALIAS = "champion"
+
+# Um Challenger com menos features pode ser promovido mesmo sem melhorar o MAE,
+# desde que a degradação de nMAE não ultrapasse esta tolerância.
+NMAE_SIMPLIFICATION_TOLERANCE_PP = 0.05
+
+
+# Injeção global de credenciais S3/RustFS para boto3 e MLflow Artifacts.
 os.environ["AWS_ACCESS_KEY_ID"] = settings.RUSTFS_ROOT_USER
 os.environ["AWS_SECRET_ACCESS_KEY"] = settings.RUSTFS_ROOT_PASSWORD
 os.environ["MLFLOW_S3_ENDPOINT_URL"] = settings.RUSTFS_ENDPOINT
@@ -31,76 +46,323 @@ os.environ["AWS_ENDPOINT_URL"] = settings.RUSTFS_ENDPOINT
 
 
 # ==============================================================================
+# HELPERS DE CONTRATO DE MÉTRICAS
+# ==============================================================================
+
+def resolve_metric(
+    metrics: Mapping[str, Any],
+    canonical_name: str,
+    *,
+    required: bool = True,
+) -> float | None:
+    """
+    Resolve uma métrica MLflow priorizando o nome canônico.
+
+    Compatibilidade histórica:
+    Runs antigas podem possuir métricas com sufixo anual, por exemplo:
+
+        oot_nmae_pct_YYYY
+
+    O ano não faz parte do contrato atual. Portanto:
+
+    1. procura primeiro a chave canônica;
+    2. se ausente, procura uma única variante histórica ``_<ano>``;
+    3. se houver mais de uma variante histórica, falha explicitamente
+       para evitar seleção silenciosa de uma métrica ambígua;
+    4. se nenhuma métrica existir e ``required=True``, falha.
+
+    Exemplos aceitos:
+        oot_nmae_pct
+        oot_nmae_pct_2024
+        oot_nmae_pct_2025
+        oot_nmae_pct_2026
+
+    Nenhum ano específico é codificado na lógica.
+    """
+
+    canonical_value = metrics.get(
+        canonical_name
+    )
+
+    if canonical_value is not None:
+        return float(canonical_value)
+
+    legacy_pattern = re.compile(
+        rf"^{re.escape(canonical_name)}_(\d{{4}})$"
+    )
+
+    legacy_candidates = []
+
+    for metric_name, metric_value in metrics.items():
+        if metric_value is None:
+            continue
+
+        match = legacy_pattern.fullmatch(
+            metric_name
+        )
+
+        if match is not None:
+            legacy_candidates.append(
+                (
+                    metric_name,
+                    metric_value,
+                )
+            )
+
+    if len(legacy_candidates) == 1:
+        metric_name, metric_value = (
+            legacy_candidates[0]
+        )
+
+        logger.warning(
+            f"⚠️ Usando métrica legada "
+            f"'{metric_name}' como fallback para "
+            f"'{canonical_name}'."
+        )
+
+        return float(metric_value)
+
+    if len(legacy_candidates) > 1:
+        candidates = ", ".join(
+            name
+            for name, _ in legacy_candidates
+        )
+
+        raise RuntimeError(
+            f"Métrica '{canonical_name}' ausente e "
+            f"foram encontradas múltiplas variantes "
+            f"legadas: {candidates}. "
+            "A seleção seria ambígua."
+        )
+
+    if required:
+        raise RuntimeError(
+            f"Métrica obrigatória "
+            f"'{canonical_name}' não encontrada."
+        )
+
+    return None
+
+
+def get_required_num_features(
+    params: Mapping[str, Any],
+    *,
+    role: str,
+) -> int:
+    """
+    Obtém o número de features registrado na Run.
+
+    O Challenger deve sempre possuir este parâmetro,
+    pois ele é necessário para a regra de parcimônia.
+    """
+
+    value = params.get(
+        "num_features"
+    )
+
+    if value is None:
+        raise RuntimeError(
+            f"{role} não possui o parâmetro "
+            "'num_features'."
+        )
+
+    return int(value)
+
+
+# ==============================================================================
 # PASSO 1: EXTRAÇÃO, PERSISTÊNCIA E PADRONIZAÇÃO DE DATASETS
 # ==============================================================================
-@task(name="1. Extrair e Salvar Janela Expansiva", retries=2, retry_delay_seconds=30)
-def fetch_expanding_window_data() -> tuple[pd.DataFrame, pd.DataFrame, str, str]:
+
+@task(
+    name="1. Extrair e Salvar Janela Expansiva",
+    retries=2,
+    retry_delay_seconds=30,
+)
+def fetch_expanding_window_data(
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    str,
+    str,
+]:
     """
     Extrai os dados aplicando a regra de MLOps de Mês Fechado (Lag M-1),
-    persiste os datasets na camada Gold via utils.py e retorna DataFrames e nomes.
+    persiste os datasets na camada Gold via utils.py e retorna
+    DataFrames e nomes.
     """
-    s3_gold_path = f"s3://{settings.RUSTFS_BUCKET}/gold/"
-    logger.info(f"📖 Lendo e concatenando parquets da camada Gold: {s3_gold_path}")
 
-    df = pd.read_parquet(s3_gold_path, storage_options=settings.storage_options)
+    s3_gold_path = (
+        f"s3://{settings.RUSTFS_BUCKET}/gold/"
+    )
 
-    date_col = "date" if "date" in df.columns else "data"
-    df[date_col] = pd.to_datetime(df[date_col])
-    df = df.sort_values(by=date_col).reset_index(drop=True)
+    logger.info(
+        "📖 Lendo e concatenando parquets "
+        f"da camada Gold: {s3_gold_path}"
+    )
+
+    df = pd.read_parquet(
+        s3_gold_path,
+        storage_options=settings.storage_options,
+    )
+
+    date_col = (
+        "date"
+        if "date" in df.columns
+        else "data"
+    )
+
+    df[date_col] = pd.to_datetime(
+        df[date_col]
+    )
+
+    df = (
+        df.sort_values(
+            by=date_col
+        )
+        .reset_index(
+            drop=True
+        )
+    )
 
     max_date = df[date_col].max()
-    first_day_current_month = max_date.replace(day=1, hour=0, minute=0, second=0)
-    current_month_hours = len(df[df[date_col] >= first_day_current_month])
+
+    first_day_current_month = max_date.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+    )
+
+    current_month_hours = len(
+        df[
+            df[date_col]
+            >= first_day_current_month
+        ]
+    )
 
     if current_month_hours < 28 * 24:
         logger.warning(
-            f"⚠️ Mês recente ({first_day_current_month.strftime('%Y-%m')}) incompleto. "
-            f"Deslocando janela para o último mês fechado."
+            "⚠️ Mês recente "
+            f"({first_day_current_month.strftime('%Y-%m')}) "
+            "incompleto. Deslocando janela para o "
+            "último mês fechado."
         )
-        oot_start_date = (first_day_current_month - pd.Timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0)
-        oot_end_date = first_day_current_month
+
+        oot_start_date = (
+            first_day_current_month
+            - pd.Timedelta(days=1)
+        ).replace(
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+        )
+
+        oot_end_date = (
+            first_day_current_month
+        )
+
     else:
-        oot_start_date = first_day_current_month
+        oot_start_date = (
+            first_day_current_month
+        )
+
         oot_end_date = max_date
 
-    df_train = df[df[date_col] < oot_start_date].copy()
-    df_test = df[(df[date_col] >= oot_start_date) & (df[date_col] < oot_end_date)].copy()
+    df_train = df[
+        df[date_col] < oot_start_date
+    ].copy()
 
-    train_start_str = df_train[date_col].min().strftime("%Y_%m")
-    cutoff_str = oot_start_date.strftime("%Y_%m")
+    df_test = df[
+        (
+            df[date_col]
+            >= oot_start_date
+        )
+        & (
+            df[date_col]
+            < oot_end_date
+        )
+    ].copy()
 
-    train_file_label = f"train_wind_energy_{train_start_str}_expanding_up_to_{cutoff_str}.parquet"
-    test_file_label = f"oot_test_wind_energy_{cutoff_str}.parquet"
+    train_start_str = (
+        df_train[date_col]
+        .min()
+        .strftime("%Y_%m")
+    )
+
+    cutoff_str = (
+        oot_start_date
+        .strftime("%Y_%m")
+    )
+
+    train_file_label = (
+        f"train_wind_energy_{train_start_str}"
+        f"_expanding_up_to_{cutoff_str}.parquet"
+    )
+
+    test_file_label = (
+        f"oot_test_wind_energy_"
+        f"{cutoff_str}.parquet"
+    )
 
     save_dataset_to_lake_or_local(
         df=df_train,
-        key=f"gold/{train_file_label}",
-        local_path=os.path.join("data", "gold", train_file_label)
-    )
-    
-    save_dataset_to_lake_or_local(
-        df=df_test,
-        key=f"gold/{test_file_label}",
-        local_path=os.path.join("data", "gold", test_file_label)
+        key=(
+            f"gold/"
+            f"{train_file_label}"
+        ),
+        local_path=os.path.join(
+            "data",
+            "gold",
+            train_file_label,
+        ),
     )
 
-    logger.info("✅ Datasets de Treino e Teste processados e sincronizados com sucesso!")
-    return df_train, df_test, train_file_label, test_file_label
+    save_dataset_to_lake_or_local(
+        df=df_test,
+        key=(
+            f"gold/"
+            f"{test_file_label}"
+        ),
+        local_path=os.path.join(
+            "data",
+            "gold",
+            test_file_label,
+        ),
+    )
+
+    logger.info(
+        "✅ Datasets de Treino e Teste "
+        "processados e sincronizados com sucesso!"
+    )
+
+    return (
+        df_train,
+        df_test,
+        train_file_label,
+        test_file_label,
+    )
 
 
 # ==============================================================================
 # PASSO 2: OTIMIZAÇÃO E TREINAMENTO AGNÓSTICO
 # ==============================================================================
-@task(name="2. Otimizar Hiperparâmetros (Agnóstico)", retries=1)
+
+@task(
+    name="2. Otimizar Hiperparâmetros (Agnóstico)",
+    retries=1,
+)
 def optimize_hyperparameters(
     optimizer_func: ModelOptimizer | None,
     df_train: pd.DataFrame,
     train_file: str,
 ) -> OptimizationResult:
+
     if optimizer_func is None:
         raise ValueError(
-            "O treinamento configurado exige uma execução de otimização, "
-            "mas optimizer_func é None."
+            "O treinamento configurado exige "
+            "uma execução de otimização, mas "
+            "optimizer_func é None."
         )
 
     result = optimizer_func(
@@ -112,28 +374,35 @@ def optimize_hyperparameters(
 
     if not result:
         raise RuntimeError(
-            "O otimizador não retornou um resultado válido."
+            "O otimizador não retornou "
+            "um resultado válido."
         )
 
     if "optimization_run_id" not in result:
         raise RuntimeError(
-            "Resultado da otimização não contém 'optimization_run_id'."
+            "Resultado da otimização não contém "
+            "'optimization_run_id'."
         )
 
     if "best_params" not in result:
         raise RuntimeError(
-            "Resultado da otimização não contém 'best_params'."
+            "Resultado da otimização não contém "
+            "'best_params'."
         )
 
     logger.info(
-        f"✅ Otimização concluída. "
-        f"Run MLflow: {result['optimization_run_id']}"
+        "✅ Otimização concluída. "
+        "Run MLflow: "
+        f"{result['optimization_run_id']}"
     )
 
     return result
 
 
-@task(name="3. Treinar Modelo (Agnóstico)", log_prints=True)
+@task(
+    name="3. Treinar Modelo (Agnóstico)",
+    log_prints=True,
+)
 def execute_training(
     trainer_func: ModelTrainer,
     optimization_result: OptimizationResult,
@@ -143,20 +412,31 @@ def execute_training(
     test_file: str,
 ) -> tuple[str, float]:
     """
-    Executa o treinamento utilizando explicitamente os hiperparâmetros
-    produzidos pela execução atual da otimização.
+    Executa o treinamento utilizando explicitamente
+    os hiperparâmetros produzidos pela execução atual
+    da otimização.
     """
 
     logger.info(
-        f"⚙️ Iniciando treinamento utilizando: "
+        "⚙️ Iniciando treinamento utilizando: "
         f"{trainer_func.__name__}"
     )
 
-    optimization_run_id = optimization_result["optimization_run_id"]
-    best_params = optimization_result["best_params"]
+    optimization_run_id = (
+        optimization_result[
+            "optimization_run_id"
+        ]
+    )
+
+    best_params = (
+        optimization_result[
+            "best_params"
+        ]
+    )
 
     logger.info(
-        f"🔗 Treinamento vinculado à Optimization Run: "
+        "🔗 Treinamento vinculado à "
+        "Optimization Run: "
         f"{optimization_run_id}"
     )
 
@@ -166,14 +446,16 @@ def execute_training(
         train_file,
         test_file,
         best_params=best_params,
-        optimization_run_id=optimization_run_id,
+        optimization_run_id=(
+            optimization_run_id
+        ),
     )
 
     return run_id, mae
 
 
 # ==============================================================================
-# QUALITY GATE (NAVALHA DE OCKHAM: CHAMPION VS CHALLENGER)
+# PASSO 3: QUALITY GATE — CHAMPION VS CHALLENGER
 # ==============================================================================
 
 def get_registered_model_version(
@@ -181,24 +463,33 @@ def get_registered_model_version(
     model_name: str,
     run_id: str,
 ) -> str:
-    """Obtém a versão registrada correspondente à run do Challenger."""
+    """
+    Obtém a versão registrada correspondente
+    à Run do Challenger.
+    """
 
-    versions = client.search_model_versions(
-        filter_string=(
-            f"name='{model_name}' "
-            f"and run_id='{run_id}'"
+    versions = (
+        client.search_model_versions(
+            filter_string=(
+                f"name='{model_name}' "
+                f"and run_id='{run_id}'"
+            )
         )
     )
 
     if not versions:
         raise RuntimeError(
-            f"Nenhuma versão registrada encontrada para "
-            f"model='{model_name}' e run_id='{run_id}'."
+            "Nenhuma versão registrada "
+            "encontrada para "
+            f"model='{model_name}' e "
+            f"run_id='{run_id}'."
         )
 
     return max(
         versions,
-        key=lambda version: int(version.version),
+        key=lambda version: int(
+            version.version
+        ),
     ).version
 
 
@@ -210,76 +501,95 @@ def evaluate_and_promote(
     challenger_run_id: str,
     challenger_mae: float,
 ):
-    model_name = "ensemble_lgb_xgb_rf_bahia"
-    client = mlflow.tracking.MlflowClient()
+    """
+    Compara Challenger e Champion.
 
-    challenger_run = client.get_run(challenger_run_id)
+    Regra de promoção:
+    - promove se o MAE do Challenger melhorar;
+    - ou, pela regra de parcimônia, se usar menos
+      features e a degradação de nMAE for no máximo
+      NMAE_SIMPLIFICATION_TOLERANCE_PP.
 
-    challenger_nmae = float(
-        challenger_run.data.metrics.get(
-            "oot_nmae_pct_2026",
-            float("inf"),
+    Métricas atuais usam nomes canônicos.
+    Runs históricas com sufixo anual são aceitas
+    apenas por meio do resolvedor de compatibilidade.
+    """
+
+    client = MlflowClient(
+        tracking_uri=(
+            settings.MLFLOW_TRACKING_URI
         )
     )
 
-    challenger_features = int(
-        challenger_run.data.params.get(
-            "num_features",
-            0,
+    challenger_run = client.get_run(
+        challenger_run_id
+    )
+
+    challenger_nmae = resolve_metric(
+        challenger_run.data.metrics,
+        "oot_nmae_pct",
+    )
+
+    challenger_features = (
+        get_required_num_features(
+            challenger_run.data.params,
+            role="Challenger",
         )
     )
 
     nmae_diff = None
 
     try:
-        champion_info = client.get_model_version_by_alias(
-            model_name,
-            "champion",
+        champion_info = (
+            client.get_model_version_by_alias(
+                MODEL_NAME,
+                MODEL_ALIAS,
+            )
         )
 
     except MlflowException:
         logger.warning(
-            f"ℹ️ Nenhum '@champion' encontrado para "
-            f"'{model_name}'."
+            "ℹ️ Nenhum '@champion' encontrado "
+            f"para '{MODEL_NAME}'."
         )
 
-        promote_to_champion = True
+        promotion_reason = (
+            "FIRST_CHAMPION"
+        )
+
         champion_mae = None
         champion_nmae = None
         champion_features = None
 
     else:
-        champ_run = client.get_run(champion_info.run_id)
-
-        champion_mae_raw = (
-            champ_run.data.metrics.get("oot_mae_mw")
-            or champ_run.data.metrics.get("oot_mae_mw_2026")
+        champion_run = client.get_run(
+            champion_info.run_id
         )
 
-        if champion_mae_raw is None:
-            raise RuntimeError(
-                f"Champion v{champion_info.version} não possui "
-                "métrica 'oot_mae_mw' ou 'oot_mae_mw_2026'."
-            )
+        champion_mae = resolve_metric(
+            champion_run.data.metrics,
+            "oot_mae_mw",
+        )
 
-        champion_mae = float(champion_mae_raw)
+        champion_nmae = resolve_metric(
+            champion_run.data.metrics,
+            "oot_nmae_pct",
+        )
 
-        champion_nmae = float(
-            champ_run.data.metrics.get(
-                "oot_nmae_pct_2026",
-                float("inf"),
+        champion_features_raw = (
+            champion_run.data.params.get(
+                "num_features"
             )
         )
 
-        champion_features = int(
-            champ_run.data.params.get(
-                "num_features",
-                999,
-            )
+        champion_features = (
+            int(champion_features_raw)
+            if champion_features_raw is not None
+            else None
         )
 
         print(
-            f"🏆 Champion atual "
+            "🏆 Champion atual "
             f"(v{champion_info.version}): "
             f"MAE={champion_mae:.2f} MW | "
             f"nMAE={champion_nmae:.2f}% | "
@@ -287,43 +597,80 @@ def evaluate_and_promote(
         )
 
         print(
-            f"⚔️ Challenger "
+            "⚔️ Challenger "
             f"(Run {challenger_run_id[:8]}): "
             f"MAE={challenger_mae:.2f} MW | "
             f"nMAE={challenger_nmae:.2f}% | "
             f"Features={challenger_features}"
         )
 
-        mae_improved = challenger_mae < champion_mae
-        fewer_features = challenger_features < champion_features
+        mae_improved = (
+            challenger_mae < champion_mae
+        )
 
-        nmae_diff = challenger_nmae - champion_nmae
+        fewer_features = (
+            champion_features is not None
+            and challenger_features
+            < champion_features
+        )
+
+        nmae_diff = (
+            challenger_nmae
+            - champion_nmae
+        )
 
         within_tolerance = (
             fewer_features
-            and nmae_diff <= 0.05
+            and nmae_diff
+            <= NMAE_SIMPLIFICATION_TOLERANCE_PP
         )
 
-        promote_to_champion = (
-            mae_improved
-            or within_tolerance
-        )
-
-        if not promote_to_champion:
-            reason = (
-                f"MAE superior "
-                f"({challenger_mae:.2f} vs "
-                f"{champion_mae:.2f} MW)"
-                if not mae_improved
-                else (
-                    f"Condição de simplificação não satisfeita: "
-                    f"{challenger_features} vs "
-                    f"{champion_features} features"
-                )
+        if mae_improved:
+            promotion_reason = (
+                "MAE_IMPROVED"
             )
 
+        elif within_tolerance:
+            promotion_reason = (
+                "PARSIMONY_WITHIN_"
+                "NMAE_TOLERANCE"
+            )
+
+        else:
+            if champion_features is None:
+                reason = (
+                    "MAE não melhorou "
+                    f"({challenger_mae:.2f} vs "
+                    f"{champion_mae:.2f} MW) e "
+                    "o Champion não possui "
+                    "'num_features' para avaliar "
+                    "a regra de parcimônia."
+                )
+
+            elif not fewer_features:
+                reason = (
+                    "MAE não melhorou "
+                    f"({challenger_mae:.2f} vs "
+                    f"{champion_mae:.2f} MW) e "
+                    "o Challenger não reduz "
+                    "o número de features "
+                    f"({challenger_features} vs "
+                    f"{champion_features})."
+                )
+
+            else:
+                reason = (
+                    "O Challenger usa menos "
+                    "features, mas a diferença "
+                    "de nMAE excede a tolerância: "
+                    f"{nmae_diff:+.4f} p.p. > "
+                    f"{NMAE_SIMPLIFICATION_TOLERANCE_PP:.4f} "
+                    "p.p."
+                )
+
             logger.warning(
-                f"❌ Challenger rejeitado: {reason}"
+                "❌ Challenger rejeitado: "
+                f"{reason}"
             )
 
             client.set_tag(
@@ -331,27 +678,36 @@ def evaluate_and_promote(
                 "quality_gate_status",
                 "REJECTED",
             )
+
             client.set_tag(
                 challenger_run_id,
                 "rejection_reason",
                 reason,
             )
 
+            client.set_tag(
+                challenger_run_id,
+                "quality_gate_nmae_delta_pp",
+                str(nmae_diff),
+            )
+
             return
 
-    # ================================================================
+    # ==========================================================================
     # PROMOÇÃO
-    # ================================================================
+    # ==========================================================================
 
-    challenger_version = get_registered_model_version(
-        client,
-        model_name,
-        challenger_run_id,
+    challenger_version = (
+        get_registered_model_version(
+            client,
+            MODEL_NAME,
+            challenger_run_id,
+        )
     )
 
     client.set_registered_model_alias(
-        model_name,
-        "champion",
+        MODEL_NAME,
+        MODEL_ALIAS,
         challenger_version,
     )
 
@@ -363,33 +719,45 @@ def evaluate_and_promote(
 
     client.set_tag(
         challenger_run_id,
-        "quality_gate_champion_mae_mw",
-        str(champion_mae),
+        "quality_gate_decision_reason",
+        promotion_reason,
     )
 
     client.set_tag(
         challenger_run_id,
-        "N/A_FIRST_CHAMPION" if nmae_diff is None else str(nmae_diff),
-        str(nmae_diff),
+        "quality_gate_champion_mae_mw",
+        (
+            "N/A_FIRST_CHAMPION"
+            if champion_mae is None
+            else str(champion_mae)
+        ),
+    )
+
+    client.set_tag(
+        challenger_run_id,
+        "quality_gate_nmae_delta_pp",
+        (
+            "N/A_FIRST_CHAMPION"
+            if nmae_diff is None
+            else str(nmae_diff)
+        ),
     )
 
     logger.info(
-        f"🚀 Modelo v{challenger_version} promovido "
-        f"para '@champion'."
+        f"🚀 Modelo v{challenger_version} "
+        "promovido para '@champion'."
     )
 
-    # ================================================================
+    # ==========================================================================
     # HOT RELOAD
-    # ================================================================
+    # ==========================================================================
+
+    api_reload_url = os.getenv(
+        "API_RELOAD_URL",
+        "http://localhost:8000/reload-model",
+    )
 
     try:
-        import requests
-
-        api_reload_url = os.getenv(
-            "API_RELOAD_URL",
-            "http://localhost:8000/reload-model",
-        )
-
         response = requests.post(
             api_reload_url,
             timeout=5,
@@ -398,30 +766,41 @@ def evaluate_and_promote(
         response.raise_for_status()
 
         logger.info(
-            "⚡ HOT-RELOAD: API atualizada com sucesso."
+            "⚡ HOT-RELOAD: API atualizada "
+            "com sucesso."
         )
 
     except requests.RequestException as exc:
         logger.warning(
-            f"⚠️ Modelo promovido, mas o HOT-RELOAD falhou: {exc}"
+            "⚠️ Modelo promovido, mas o "
+            f"HOT-RELOAD falhou: {exc}"
         )
 
-# ==========================================
+
+# ==============================================================================
 # REGISTRY DE DEPENDÊNCIAS
-# ==========================================
+# ==============================================================================
+
 TRAINER_REGISTRY = {
     "stacking": default_stacking_trainer,
 }
 
 OPTIMIZER_REGISTRY = {
     "stacking": default_stacking_optimizer,
-    "none": None
+    "none": None,
 }
 
+
 # ==============================================================================
-# FLUXO PRINCIPAL PREFECT (ORQUESTRADOR CT)
+# FLUXO PRINCIPAL PREFECT — ORQUESTRADOR CT
 # ==============================================================================
-@flow(name="Pipeline de Treinamento Contínuo - Energia Eólica Bahia")
+
+@flow(
+    name=(
+        "Pipeline de Treinamento Contínuo "
+        "- Energia Eólica Bahia"
+    )
+)
 def continuous_training_pipeline(
     trainer_name: str = "stacking",
     optimizer_name: str = "stacking",
@@ -429,38 +808,63 @@ def continuous_training_pipeline(
     """
     Orquestrador agnóstico de treinamento contínuo.
 
-    A execução atual da otimização produz explicitamente os parâmetros
-    consumidos pela execução atual do treinamento.
+    A execução atual da otimização produz
+    explicitamente os parâmetros consumidos
+    pela execução atual do treinamento.
     """
 
-    trainer_algorithm = TRAINER_REGISTRY.get(trainer_name)
-    optimizer_algorithm = OPTIMIZER_REGISTRY.get(optimizer_name)
+    trainer_algorithm = (
+        TRAINER_REGISTRY.get(
+            trainer_name
+        )
+    )
+
+    optimizer_algorithm = (
+        OPTIMIZER_REGISTRY.get(
+            optimizer_name
+        )
+    )
 
     if trainer_algorithm is None:
         raise ValueError(
-            f"Trainer '{trainer_name}' não encontrado no Registry."
+            f"Trainer '{trainer_name}' "
+            "não encontrado no Registry."
         )
 
     logger.info(
-        "🚀 Iniciando Pipeline de Treinamento Contínuo (CT)..."
+        "🚀 Iniciando Pipeline de "
+        "Treinamento Contínuo (CT)..."
     )
 
     # 1. Dados
-    df_train, df_test, train_file, test_file = (
-        fetch_expanding_window_data()
-    )
+    (
+        df_train,
+        df_test,
+        train_file,
+        test_file,
+    ) = fetch_expanding_window_data()
 
     # 2. Otimização
-    optimization_result = optimize_hyperparameters(
-        optimizer_func=optimizer_algorithm,
-        df_train=df_train,
-        train_file=train_file,
+    optimization_result = (
+        optimize_hyperparameters(
+            optimizer_func=(
+                optimizer_algorithm
+            ),
+            df_train=df_train,
+            train_file=train_file,
+        )
     )
 
-    # 3. Treinamento usando EXPLICITAMENTE o resultado acima
-    challenger_run_id, challenger_mae = execute_training(
+    # 3. Treinamento usando explicitamente
+    #    o resultado da otimização atual.
+    (
+        challenger_run_id,
+        challenger_mae,
+    ) = execute_training(
         trainer_func=trainer_algorithm,
-        optimization_result=optimization_result,
+        optimization_result=(
+            optimization_result
+        ),
         df_train=df_train,
         df_test=df_test,
         train_file=train_file,
@@ -474,7 +878,8 @@ def continuous_training_pipeline(
     )
 
     logger.info(
-        "🏁 Pipeline de Treinamento Contínuo finalizado com sucesso!"
+        "🏁 Pipeline de Treinamento "
+        "Contínuo finalizado com sucesso!"
     )
 
 
