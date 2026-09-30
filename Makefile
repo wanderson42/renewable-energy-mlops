@@ -30,5 +30,5 @@ test-opt:
 	poetry run python -m energy_mlops.models.optimize --trials 5
 
 test-train:
-	@echo "🧪 Executando treino do Stacking Ensemble (MLflow Artifacts -> MinIO)..."
+	@echo "🧪 Executando treino do Stacking Ensemble (MLflow Artifacts -> RustFS)..."
 	poetry run python -m energy_mlops.models.train_ensemble

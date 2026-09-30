@@ -9,7 +9,7 @@ def generate_wind_and_time_features(df: pd.DataFrame, use_exogenous_lags: bool =
     if not pd.api.types.is_datetime64_any_dtype(df_feat["date"]):
         df_feat["date"] = pd.to_datetime(df_feat["date"])
 
-    # 2. CORREÇÃO: Remover o timezone (UTC) se ele existir nos dados extraídos
+    # 2. Remover o timezone (UTC) se ele existir nos dados extraídos
     if df_feat["date"].dt.tz is not None:
         df_feat["date"] = df_feat["date"].dt.tz_localize(None)
 
@@ -85,8 +85,13 @@ def generate_wind_and_time_features(df: pd.DataFrame, use_exogenous_lags: bool =
 
     # Lags exógenos úteis (sem vazar o target)
     if use_exogenous_lags and "wind_speed_100m" in df_feat.columns:
-        #df_feat["wind_speed_lag_1h"] = df_feat["wind_speed_100m"].shift(1)
-        df_feat["wind_speed_roll_mean_3h"] = df_feat["wind_speed_100m"].rolling(3).mean()
-        df_feat.bfill(inplace=True)  # Preenche nulos iniciais do shift/roll de forma segura
+        df_feat["wind_speed_roll_mean_3h"] = (
+            df_feat["wind_speed_100m"]
+            .rolling(
+                window=3,
+                min_periods=1,
+            )
+            .mean()
+        )
 
     return df_feat

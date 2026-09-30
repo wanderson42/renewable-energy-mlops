@@ -5,6 +5,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, status
+from mlflow.tracking import MlflowClient
 
 from energy_mlops.config import settings
 from energy_mlops.data.build_features import generate_wind_and_time_features
@@ -17,25 +18,98 @@ os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("RUSTFS_ROOT_PASSWORD", settings
 os.environ["MLFLOW_S3_ENDPOINT_URL"] = os.getenv("RUSTFS_ENDPOINT", settings.RUSTFS_ENDPOINT)
 
 model_cache = {}
-MODEL_NAME = "ensemble_lgb_xgb_rf_bahia"  # Nome registrado no MLflow em train_ensemble.py
+model_metadata_cache = {}
+
+MODEL_NAME = "ensemble_lgb_xgb_rf_bahia"
+MODEL_ALIAS = "champion"
+
+def load_champion_model():
+    """
+    Carrega o modelo registrado com o alias Champion.
+
+    Esta função centraliza o acesso ao MLflow
+    e cria uma fronteira explícita para testes.
+    """
+    model_uri = (f"models:/{MODEL_NAME}@{MODEL_ALIAS}")
+
+    return mlflow.pyfunc.load_model(model_uri)
+
+def load_champion_metadata() -> dict:
+    client = MlflowClient(
+        tracking_uri=settings.MLFLOW_TRACKING_URI
+    )
+
+    model_version = client.get_model_version_by_alias(
+        MODEL_NAME,
+        MODEL_ALIAS,
+    )
+
+    run = client.get_run(
+        model_version.run_id
+    )
+
+    metrics = run.data.metrics
+
+    return {
+        "model_name": MODEL_NAME,
+        "alias": MODEL_ALIAS,
+        "version": int(model_version.version),
+        "run_id": model_version.run_id,
+        "metrics": {
+            "oot_mae_mw": metrics.get(
+                "oot_mae_mw"
+            ),
+            "oot_nmae_pct": metrics.get(
+                "oot_nmae_pct"
+            ),
+            "oot_mae_fc_pct": metrics.get(
+                "oot_mae_fc_pct"
+            ),
+            "oot_r2_score": metrics.get(
+                "oot_r2_score"
+            ),
+        },
+    }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Ciclo de vida do FastAPI: Baixa o modelo @champion no startup."""
-    model_uri = f"models:/{MODEL_NAME}@champion"
-    print(f"🔄 Conectando ao MLflow e baixando {model_uri}...")
+    model_uri = (
+        f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+    )
+
+    print(
+        f"🔄 Conectando ao MLflow e baixando "
+        f"{model_uri}..."
+    )
 
     try:
-        model_cache["champion"] = mlflow.pyfunc.load_model(model_uri)
-        print("✅ Modelo @champion carregado na memória com sucesso!")
+
+        model_cache["champion"] = (
+            load_champion_model()
+        )
+
+        model_metadata_cache["champion"] = (
+            load_champion_metadata()
+        )
+
+        print(
+            "✅ Modelo @champion e metadados "
+            "carregados com sucesso!"
+        )
+
     except Exception as e:  # noqa: BLE001
-        print(f"⚠️ Erro ao carregar o modelo no startup: {e}")
+        print(
+            f"⚠️ Erro ao carregar Champion: {e}"
+        )
+
         model_cache["champion"] = None
+        model_metadata_cache["champion"] = None
 
     yield
 
     model_cache.clear()
+    model_metadata_cache.clear()
 
 
 app = FastAPI(
@@ -57,20 +131,67 @@ async def health_check():
         )
     return {"status": "healthy", "model_loaded": True}
 
+@app.get("/model-info")
+async def model_info():
+    metadata = model_metadata_cache.get(
+        "champion"
+    )
+
+    if metadata is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Metadados do modelo Champion "
+                "não estão disponíveis."
+            ),
+        )
+
+    return metadata
 
 @app.post("/reload-model", status_code=200)
 async def reload_model():
-    """Endpoint de Hot-Reload: Recarrega o modelo @champion mais recente do MLflow para a RAM."""
-    model_uri = f"models:/{MODEL_NAME}@champion"
-    print(f"🔄 Solicitação de Hot-Reload recebida. Baixando {model_uri}...")
+    """Endpoint de Hot-Reload: Recarrega o modelo @champion mais recente do
+      MLflow para a RAM e atualiza os metadados."""
+    model_uri = (
+        f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+    )
+
+    print(
+        "🔄 Solicitação de Hot-Reload recebida. "
+        f"Baixando {model_uri}..."
+    )
+
     try:
-        model_cache["champion"] = mlflow.pyfunc.load_model(model_uri)
-        print("✅ Modelo @champion atualizado com sucesso na memória!")
-        return {"status": "success", "message": "Modelo recarregado com sucesso na memória."}
+
+        new_model = load_champion_model()
+
+        new_metadata = (
+            load_champion_metadata()
+        )
+
+        model_cache["champion"] = new_model
+
+        model_metadata_cache[
+            "champion"
+        ] = new_metadata
+
+        return {
+            "status": "success",
+            "message": (
+                "Modelo e metadados Champion "
+                "recarregados com sucesso."
+            ),
+            "version": new_metadata["version"],
+        }
+
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Falha ao recarregar o modelo: {e!s}",
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                f"Falha ao recarregar o modelo: {e!s}"
+            ),
         )
 
 @app.post("/predict/batch", response_model=list[PredictionResponse])

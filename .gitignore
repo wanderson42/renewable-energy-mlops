@@ -40,8 +40,18 @@ __pycache__/
 .ruff_cache/
 
 # Dados Locais (evita subir arquivos .parquet pesados para o GitHub)
-# O Data Lake oficial agora é o MinIO no Kubernetes
+# O Data Lake oficial agora é o RustFS no Kubernetes
 data/*.parquet
 data/*.csv
 
-helm/values_secrets.yamlhelm/values-secrets.yaml
+helm/values_secrets.yaml
+
+# Secrets locais do Helm
+helm/values_secrets.yaml
+
+# Banco local do MLflow
+mlflow.db
+
+# Evidências locais de validação
+validation_*/
+pytest_full_suite.txt

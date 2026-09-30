@@ -3,11 +3,16 @@ import os
 import mlflow.tracking
 import pandas as pd
 from loguru import logger
+from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 from prefect import flow, task
 
 from energy_mlops.config import settings
-from energy_mlops.models.interfaces import ModelOptimizer, ModelTrainer
+from energy_mlops.models.interfaces import (
+    ModelOptimizer,
+    ModelTrainer,
+    OptimizationResult,
+)
 from energy_mlops.models.optimize_stacking_ensemble import (
     run_optimization as default_stacking_optimizer,
 )
@@ -88,105 +93,318 @@ def fetch_expanding_window_data() -> tuple[pd.DataFrame, pd.DataFrame, str, str]
 # ==============================================================================
 @task(name="2. Otimizar Hiperparâmetros (Agnóstico)", retries=1)
 def optimize_hyperparameters(
-    optimizer_func: ModelOptimizer | None, 
-    df_train: pd.DataFrame, 
-    train_file: str
-) -> dict:
+    optimizer_func: ModelOptimizer | None,
+    df_train: pd.DataFrame,
+    train_file: str,
+) -> OptimizationResult:
     if optimizer_func is None:
-        logger.info("⏩ Etapa de otimização ignorada para este modelo.")
-        return {}
-    return optimizer_func(df_train=df_train, train_file=train_file, n_trials=10, n_splits=3)
+        raise ValueError(
+            "O treinamento configurado exige uma execução de otimização, "
+            "mas optimizer_func é None."
+        )
+
+    result = optimizer_func(
+        df_train=df_train,
+        train_file=train_file,
+        n_trials=10,
+        n_splits=3,
+    )
+
+    if not result:
+        raise RuntimeError(
+            "O otimizador não retornou um resultado válido."
+        )
+
+    if "optimization_run_id" not in result:
+        raise RuntimeError(
+            "Resultado da otimização não contém 'optimization_run_id'."
+        )
+
+    if "best_params" not in result:
+        raise RuntimeError(
+            "Resultado da otimização não contém 'best_params'."
+        )
+
+    logger.info(
+        f"✅ Otimização concluída. "
+        f"Run MLflow: {result['optimization_run_id']}"
+    )
+
+    return result
+
 
 @task(name="3. Treinar Modelo (Agnóstico)", log_prints=True)
 def execute_training(
-    trainer_func: ModelTrainer, 
-    df_train: pd.DataFrame, 
-    df_test: pd.DataFrame, 
-    train_file: str, 
-    test_file: str
+    trainer_func: ModelTrainer,
+    optimization_result: OptimizationResult,
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+    train_file: str,
+    test_file: str,
 ) -> tuple[str, float]:
     """
-    Recebe qualquer algoritmo de treino via injeção de dependência e executa.
-    A task não sabe se é um XGBoost, Stacking ou Rede Neural.
+    Executa o treinamento utilizando explicitamente os hiperparâmetros
+    produzidos pela execução atual da otimização.
     """
-    logger.info(f"⚙️ Iniciando treinamento utilizando o algoritmo fornecido: {trainer_func.__name__}")
-    run_id, mae = trainer_func(df_train, df_test, train_file, test_file)
+
+    logger.info(
+        f"⚙️ Iniciando treinamento utilizando: "
+        f"{trainer_func.__name__}"
+    )
+
+    optimization_run_id = optimization_result["optimization_run_id"]
+    best_params = optimization_result["best_params"]
+
+    logger.info(
+        f"🔗 Treinamento vinculado à Optimization Run: "
+        f"{optimization_run_id}"
+    )
+
+    run_id, mae = trainer_func(
+        df_train,
+        df_test,
+        train_file,
+        test_file,
+        best_params=best_params,
+        optimization_run_id=optimization_run_id,
+    )
+
     return run_id, mae
 
 
 # ==============================================================================
-# PASSO 3: QUALITY GATE (NAVALHA DE OCKHAM: CHAMPION VS CHALLENGER)
+# QUALITY GATE (NAVALHA DE OCKHAM: CHAMPION VS CHALLENGER)
 # ==============================================================================
-@task(name="4. Quality Gate (Champion vs Challenger)", log_prints=True)
-def evaluate_and_promote(challenger_run_id: str, challenger_mae: float):
+
+def get_registered_model_version(
+    client: MlflowClient,
+    model_name: str,
+    run_id: str,
+) -> str:
+    """Obtém a versão registrada correspondente à run do Challenger."""
+
+    versions = client.search_model_versions(
+        filter_string=(
+            f"name='{model_name}' "
+            f"and run_id='{run_id}'"
+        )
+    )
+
+    if not versions:
+        raise RuntimeError(
+            f"Nenhuma versão registrada encontrada para "
+            f"model='{model_name}' e run_id='{run_id}'."
+        )
+
+    return max(
+        versions,
+        key=lambda version: int(version.version),
+    ).version
+
+
+@task(
+    name="4. Quality Gate (Champion vs Challenger)",
+    log_prints=True,
+)
+def evaluate_and_promote(
+    challenger_run_id: str,
+    challenger_mae: float,
+):
     model_name = "ensemble_lgb_xgb_rf_bahia"
     client = mlflow.tracking.MlflowClient()
 
-    print("\n🛡️ INICIANDO QUALITY GATE NA ARENA (Champion vs Challenger)...")
-
-    promote_to_champion = False
     challenger_run = client.get_run(challenger_run_id)
-    challenger_nmae = float(challenger_run.data.metrics.get("oot_nmae_pct_2026", 0.0))
-    challenger_features = int(challenger_run.data.params.get("num_features", 0))
+
+    challenger_nmae = float(
+        challenger_run.data.metrics.get(
+            "oot_nmae_pct_2026",
+            float("inf"),
+        )
+    )
+
+    challenger_features = int(
+        challenger_run.data.params.get(
+            "num_features",
+            0,
+        )
+    )
+
+    nmae_diff = None
 
     try:
-        champion_info = client.get_model_version_by_alias(model_name, "champion")
-        champ_run = client.get_run(champion_info.run_id)
-
-        champ_mae = champ_run.data.metrics.get("oot_mae_mw") or champ_run.data.metrics.get("oot_mae_mw_2026")
-        champ_nmae = float(champ_run.data.metrics.get("oot_nmae_pct_2026", 0.0))
-        champ_features = int(champ_run.data.params.get("num_features", 999))
-
-        print(f"🏆 Champion Atual  (v{champion_info.version}): MAE = {champ_mae:.2f} MW | nMAE = {champ_nmae:.2f}% | Features = {champ_features}")
-        print(f"⚔️ Challenger Novo (Run {challenger_run_id[:8]}): MAE = {challenger_mae:.2f} MW | nMAE = {challenger_nmae:.2f}% | Features = {challenger_features}")
-
-        mae_improved = challenger_mae < champ_mae
-        fewer_features = challenger_features < champ_features
-        nmae_diff = challenger_nmae - champ_nmae
-        within_tolerance = fewer_features and (nmae_diff <= 0.05)
-
-        if mae_improved:
-            gain = champ_mae - challenger_mae
-            print(f"🎉 APROVADO POR DESEMPENHO! Redução de {gain:.2f} MW no MAE.")
-            promote_to_champion = True
-        elif within_tolerance:
-            print(
-                f"🎉 APROVADO PELA NAVALHA DE OCKHAM! Arquitetura mais simples "
-                f"({challenger_features} vs {champ_features} features) com variação aceitável no nMAE "
-                f"({nmae_diff:+.3f}% <= +0.05%)."
-            )
-            promote_to_champion = True
-        else:
-            reason = (
-                f"MAE superior ({challenger_mae:.2f} vs {champ_mae:.2f} MW)"
-                if not fewer_features
-                else f"Aumento no nMAE ({nmae_diff:+.3f}%) acima da tolerância (+0.05%)"
-            )
-            print(f"❌ REPROVADO! {reason}. Mantendo produção intacta.")
-            client.set_tag(challenger_run_id, "quality_gate_status", "REJECTED")
-            client.set_tag(challenger_run_id, "rejection_reason", reason)
+        champion_info = client.get_model_version_by_alias(
+            model_name,
+            "champion",
+        )
 
     except MlflowException:
-        print("ℹ️ Nenhum modelo rotulado como '@champion' foi encontrado. Promovendo o Challenger como Primeiro Campeão!")
+        logger.warning(
+            f"ℹ️ Nenhum '@champion' encontrado para "
+            f"'{model_name}'."
+        )
+
         promote_to_champion = True
+        champion_mae = None
+        champion_nmae = None
+        champion_features = None
 
-    if promote_to_champion:
-        runs = client.search_model_versions(f"name='{model_name}'")
-        latest_version = max([int(m.version) for m in runs if m.run_id == challenger_run_id], default=1)
+    else:
+        champ_run = client.get_run(champion_info.run_id)
 
-        client.set_registered_model_alias(model_name, "champion", str(latest_version))
-        client.set_tag(challenger_run_id, "quality_gate_status", "PROMOTED_CHAMPION")
-        print(f"🚀 SUCESSO: Modelo versão {latest_version} promovido para '@champion' no Registry!")
+        champion_mae_raw = (
+            champ_run.data.metrics.get("oot_mae_mw")
+            or champ_run.data.metrics.get("oot_mae_mw_2026")
+        )
 
-        try:
-            import requests
-            api_reload_url = os.getenv("API_RELOAD_URL", "http://localhost:8000/reload-model")
-            response = requests.post(api_reload_url, timeout=5)
-            if response.status_code == 200:
-                print("⚡ HOT-RELOAD: API de Inferência notificada e atualizada com sucesso sem downtime!")
-        except Exception as e:  # noqa: BLE001
-            print(f"⚠️ AVISO: Não foi possível notificar a API para Hot-Reload automático: {e}")
+        if champion_mae_raw is None:
+            raise RuntimeError(
+                f"Champion v{champion_info.version} não possui "
+                "métrica 'oot_mae_mw' ou 'oot_mae_mw_2026'."
+            )
 
+        champion_mae = float(champion_mae_raw)
+
+        champion_nmae = float(
+            champ_run.data.metrics.get(
+                "oot_nmae_pct_2026",
+                float("inf"),
+            )
+        )
+
+        champion_features = int(
+            champ_run.data.params.get(
+                "num_features",
+                999,
+            )
+        )
+
+        print(
+            f"🏆 Champion atual "
+            f"(v{champion_info.version}): "
+            f"MAE={champion_mae:.2f} MW | "
+            f"nMAE={champion_nmae:.2f}% | "
+            f"Features={champion_features}"
+        )
+
+        print(
+            f"⚔️ Challenger "
+            f"(Run {challenger_run_id[:8]}): "
+            f"MAE={challenger_mae:.2f} MW | "
+            f"nMAE={challenger_nmae:.2f}% | "
+            f"Features={challenger_features}"
+        )
+
+        mae_improved = challenger_mae < champion_mae
+        fewer_features = challenger_features < champion_features
+
+        nmae_diff = challenger_nmae - champion_nmae
+
+        within_tolerance = (
+            fewer_features
+            and nmae_diff <= 0.05
+        )
+
+        promote_to_champion = (
+            mae_improved
+            or within_tolerance
+        )
+
+        if not promote_to_champion:
+            reason = (
+                f"MAE superior "
+                f"({challenger_mae:.2f} vs "
+                f"{champion_mae:.2f} MW)"
+                if not mae_improved
+                else (
+                    f"Condição de simplificação não satisfeita: "
+                    f"{challenger_features} vs "
+                    f"{champion_features} features"
+                )
+            )
+
+            logger.warning(
+                f"❌ Challenger rejeitado: {reason}"
+            )
+
+            client.set_tag(
+                challenger_run_id,
+                "quality_gate_status",
+                "REJECTED",
+            )
+            client.set_tag(
+                challenger_run_id,
+                "rejection_reason",
+                reason,
+            )
+
+            return
+
+    # ================================================================
+    # PROMOÇÃO
+    # ================================================================
+
+    challenger_version = get_registered_model_version(
+        client,
+        model_name,
+        challenger_run_id,
+    )
+
+    client.set_registered_model_alias(
+        model_name,
+        "champion",
+        challenger_version,
+    )
+
+    client.set_tag(
+        challenger_run_id,
+        "quality_gate_status",
+        "PROMOTED_CHAMPION",
+    )
+
+    client.set_tag(
+        challenger_run_id,
+        "quality_gate_champion_mae_mw",
+        str(champion_mae),
+    )
+
+    client.set_tag(
+        challenger_run_id,
+        "N/A_FIRST_CHAMPION" if nmae_diff is None else str(nmae_diff),
+        str(nmae_diff),
+    )
+
+    logger.info(
+        f"🚀 Modelo v{challenger_version} promovido "
+        f"para '@champion'."
+    )
+
+    # ================================================================
+    # HOT RELOAD
+    # ================================================================
+
+    try:
+        import requests
+
+        api_reload_url = os.getenv(
+            "API_RELOAD_URL",
+            "http://localhost:8000/reload-model",
+        )
+
+        response = requests.post(
+            api_reload_url,
+            timeout=5,
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "⚡ HOT-RELOAD: API atualizada com sucesso."
+        )
+
+    except requests.RequestException as exc:
+        logger.warning(
+            f"⚠️ Modelo promovido, mas o HOT-RELOAD falhou: {exc}"
+        )
 
 # ==========================================
 # REGISTRY DE DEPENDÊNCIAS
@@ -206,42 +424,58 @@ OPTIMIZER_REGISTRY = {
 @flow(name="Pipeline de Treinamento Contínuo - Energia Eólica Bahia")
 def continuous_training_pipeline(
     trainer_name: str = "stacking",
-    optimizer_name: str = "stacking"
+    optimizer_name: str = "stacking",
 ):
     """
-    Orquestrador Agnóstico. Por padrão, utiliza o Stacking Ensemble, mas 
-    pode receber qualquer algoritmo que respeite o TrainerContract.
+    Orquestrador agnóstico de treinamento contínuo.
+
+    A execução atual da otimização produz explicitamente os parâmetros
+    consumidos pela execução atual do treinamento.
     """
-    # Resgata as funções do Registry usando as strings
+
     trainer_algorithm = TRAINER_REGISTRY.get(trainer_name)
     optimizer_algorithm = OPTIMIZER_REGISTRY.get(optimizer_name)
 
-    if not trainer_algorithm:
-        raise ValueError(f"Trainer '{trainer_name}' não encontrado no Registry.")
+    if trainer_algorithm is None:
+        raise ValueError(
+            f"Trainer '{trainer_name}' não encontrado no Registry."
+        )
 
-    logger.info("🚀 Iniciando Pipeline de Treinamento Contínuo (CT)...")
-
-    df_train, df_test, train_file, test_file = fetch_expanding_window_data()
-
-    # Otimização dinamica ou ignorada dependendo do modelo injetado
-    _ = optimize_hyperparameters(
-        optimizer_func=optimizer_algorithm, 
-        df_train=df_train, 
-        train_file=train_file
+    logger.info(
+        "🚀 Iniciando Pipeline de Treinamento Contínuo (CT)..."
     )
 
-    # Injeção de Dependência na task de treinamento
+    # 1. Dados
+    df_train, df_test, train_file, test_file = (
+        fetch_expanding_window_data()
+    )
+
+    # 2. Otimização
+    optimization_result = optimize_hyperparameters(
+        optimizer_func=optimizer_algorithm,
+        df_train=df_train,
+        train_file=train_file,
+    )
+
+    # 3. Treinamento usando EXPLICITAMENTE o resultado acima
     challenger_run_id, challenger_mae = execute_training(
         trainer_func=trainer_algorithm,
-        df_train=df_train, 
-        df_test=df_test, 
-        train_file=train_file, 
-        test_file=test_file
+        optimization_result=optimization_result,
+        df_train=df_train,
+        df_test=df_test,
+        train_file=train_file,
+        test_file=test_file,
     )
 
-    evaluate_and_promote(challenger_run_id, challenger_mae)
+    # 4. Quality Gate
+    evaluate_and_promote(
+        challenger_run_id,
+        challenger_mae,
+    )
 
-    logger.info("🏁 Pipeline de Treinamento Contínuo finalizado com sucesso!")
+    logger.info(
+        "🏁 Pipeline de Treinamento Contínuo finalizado com sucesso!"
+    )
 
 
 if __name__ == "__main__":

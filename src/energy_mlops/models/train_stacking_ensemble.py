@@ -1,5 +1,4 @@
 import json
-import tempfile
 
 import lightgbm as lgb
 import matplotlib.pyplot as plt
@@ -11,86 +10,86 @@ import pandas as pd
 import shap
 from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
-from sklearn.ensemble import RandomForestRegressor, StackingRegressor
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBRegressor
 
 from energy_mlops.config import settings
+from energy_mlops.data.feature_utils import select_model_features
+from energy_mlops.models.temporal_stacking import (
+    TemporalStackingRegressor,
+)
 
+'''
+TimeSeriesSplit
 
-def load_best_ensemble_params_from_mlflow() -> tuple[dict, dict, dict]:
-    """Busca o JSON com os melhores parâmetros diretamente do artefato do MLflow."""
-    default_lgb = {
-        "objective": "regression", "metric": "mae", "boosting_type": "gbdt",
-        "n_estimators": 400, "learning_rate": 0.03, "num_leaves": 45, "max_depth": 5,
-        "random_state": 42, "verbosity": -1, "n_jobs": -1,
-    }
-    default_xgb = {
-        "objective": "reg:absoluteerror", "n_estimators": 400, "learning_rate": 0.03,
-        "max_depth": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42, "n_jobs": -1,
-    }
-    default_rf = {
-        "n_estimators": 200, "max_depth": 12, "min_samples_split": 10, "random_state": 42, "n_jobs": -1,
-    }
+Fold 1
+passado ─────────► futuro
+TRAIN              VALID
+  │                  │
+  └── base models ───┘
+           │
+       OOF predictions
 
-    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
-    client = MlflowClient()
-    opt_exp_name = "wind_power_optimization_bahia"
-    
-    experiment = client.get_experiment_by_name(opt_exp_name)
-    if experiment:
-        runs = client.search_runs(
-            experiment_ids=[experiment.experiment_id],
-            order_by=["start_time DESC"],
-            max_results=1
-        )
-        if runs:
-            run_id = runs[0].info.run_id
-            print(f"☁️ A baixar parâmetros otimizados do MLflow (Run ID: {run_id})...")
-            try:
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    local_path = client.download_artifacts(run_id, "best_ensemble_params.json", tmp_dir)
-                    with open(local_path, "r") as f:
-                        loaded = json.load(f)
-                        
-                    lgb_p = loaded.get("lgb_params", {})
-                    xgb_p = loaded.get("xgb_params", {})
-                    rf_p = loaded.get("rf_params", {})
+Fold 2
+passado ─────────────────► futuro
+TRAIN                      VALID
+  │                          │
+  └────── base models ───────┘
+               │
+          OOF predictions
 
-                    lgb_p.update({"objective": "regression", "metric": "mae", "random_state": 42, "verbosity": -1, "n_jobs": -1})
-                    xgb_p.update({"objective": "reg:absoluteerror", "random_state": 42, "n_jobs": -1})
-                    rf_p.update({"random_state": 42, "n_jobs": -1})
+               ↓
 
-                    return lgb_p, xgb_p, rf_p
-            except Exception as e:  # noqa: BLE001
-                print(f"⚠️ Erro ao baixar artefato do MLflow: {e}. A utilizar parâmetros padrão.")
-        else:
-            print("⚠️ Nenhuma Run de otimização encontrada. A utilizar parâmetros padrão.")
-    else:
-        print(f"⚠️ Experimento '{opt_exp_name}' não encontrado. A utilizar parâmetros padrão.")
-        
-    return default_lgb, default_xgb, default_rf
+        todas as OOF válidas
+               ↓
+    LinearRegression
+        meta-learner
+               ↓
 
+base models são refitados em TODO o X_train
+               ↓
+         modelo final
+'''
 
-def prepare_features(df_train: pd.DataFrame, df_test: pd.DataFrame) -> tuple:
-    """Separa as features e targets dos DataFrames fornecidos pelo Prefect."""
-    drop_cols = ["wind_generation_mw", "target_fc", "date", "capacidade_mw"]
-    feature_cols = [c for c in df_train.columns if c not in drop_cols]
+def prepare_features(
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+) -> tuple:
+    """Separa features e targets usando o contrato ModelFeatureSchema."""
+
+    X_train = select_model_features(df_train)
+    X_test = select_model_features(df_test)
 
     return (
-        df_train[feature_cols], df_test[feature_cols], df_train["target_fc"], df_test["target_fc"],
-        df_train["wind_generation_mw"], df_test["wind_generation_mw"], df_train["capacidade_mw"], df_test["capacidade_mw"],
+        X_train,
+        X_test,
+        df_train["target_fc"],
+        df_test["target_fc"],
+        df_train["wind_generation_mw"],
+        df_test["wind_generation_mw"],
+        df_train["capacidade_mw"],
+        df_test["capacidade_mw"],
     )
 
 
-def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, train_file: str, test_file: str) -> tuple[str, float]:
+def train_stacking_regressor(
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+    train_file: str,
+    test_file: str,
+    best_params: dict,
+    optimization_run_id: str,
+) -> tuple[str, float]:
     """
     Treina o modelo, registra todos os metadados (SHAP, trusted_types, métricas ricas) 
     e retorna o ID da Run e o MAE para o orquestrador (Prefect).
     """
-    X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = prepare_features(df_train, df_test)
+    X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = (
+        prepare_features(df_train, df_test)
+    )
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     experiment_name = "wind_power_forecasting_bahia"
@@ -101,15 +100,64 @@ def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, trai
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name="Stacking_LGB_XGB_RF_Bahia") as run:
+
+        mlflow.set_tag(
+            "optimization_run_id",
+            optimization_run_id,
+        )
+
+        mlflow.set_tag(
+            "optimization_experiment",
+            "wind_power_optimization_bahia",
+        )
+
         run_id = run.info.run_id
         
-        mlflow.log_input(mlflow.data.from_pandas(df=X_train, source=f"s3://{settings.RUSTFS_BUCKET}/gold/{train_file}", name=train_file.replace(".parquet", "")), context="training")
-        mlflow.log_input(mlflow.data.from_pandas(df=X_test, source=f"s3://{settings.RUSTFS_BUCKET}/gold/{test_file}", name=test_file.replace(".parquet", "")), context="testing")
+        mlflow.log_input(
+            mlflow.data.from_pandas(
+                df=X_train,
+                source=f"s3://{settings.RUSTFS_BUCKET}/gold/{train_file}",
+                name=train_file.replace(".parquet", "")),
+                context="training")
+
+        mlflow.log_input(
+            mlflow.data.from_pandas(
+                df=X_test,
+                source=f"s3://{settings.RUSTFS_BUCKET}/gold/{test_file}",
+                name=test_file.replace(".parquet", "")),
+                context="testing")
+
         num_features_challenger = len(X_train.columns)
         mlflow.log_param("num_features", num_features_challenger)
 
-        # 1. Carrega parâmetros consultando o MLflow
-        lgb_params, xgb_params, rf_params = load_best_ensemble_params_from_mlflow()
+        mlflow.log_dict(
+            best_params,
+            "optimization_params_used.json",
+        )
+
+        # 1. Recebe os parâmetros diretamente da execução de otimização
+        lgb_params = best_params.get("lgb_params", {})
+        xgb_params = best_params.get("xgb_params", {})
+        rf_params = best_params.get("rf_params", {})
+
+
+        required_param_groups = {
+            "lgb_params": lgb_params,
+            "xgb_params": xgb_params,
+            "rf_params": rf_params,
+        }
+
+        missing_groups = [
+            name
+            for name, params in required_param_groups.items()
+            if not params
+        ]
+
+        if missing_groups:
+            raise ValueError(
+                f"Parâmetros de otimização ausentes: {missing_groups}. "
+                f"Optimization Run: {optimization_run_id}"
+            )
 
         mlflow.log_params({f"lgb_{k}": v for k, v in lgb_params.items()})
         mlflow.log_params({f"xgb_{k}": v for k, v in xgb_params.items()})
@@ -119,14 +167,23 @@ def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, trai
         xgb_model = XGBRegressor(**xgb_params)
         rf_model = RandomForestRegressor(**rf_params)
 
-        meta_learner = LinearRegression(positive=True, fit_intercept=False)
-        cv_strategy = KFold(n_splits=5, shuffle=False)
+        meta_learner = LinearRegression(
+            positive=True,
+            fit_intercept=False,
+        )
 
-        ensemble = StackingRegressor(
-            estimators=[("lgbm", lgb_model), ("xgboost", xgb_model), ("rf", rf_model)],
+        cv_strategy = TimeSeriesSplit(
+            n_splits=5,
+        )
+
+        ensemble = TemporalStackingRegressor(
+            estimators=[
+                ("lgbm", lgb_model),
+                ("xgboost", xgb_model),
+                ("rf", rf_model),
+            ],
             final_estimator=meta_learner,
             cv=cv_strategy,
-            n_jobs=-1,
         )
 
         print(f"🚀 A treinar Stacking Ensemble ({X_train.shape[0]} amostras, {num_features_challenger} features)...")
@@ -134,7 +191,20 @@ def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, trai
 
         meta_coefs = ensemble.final_estimator_.coef_
         print(f"🧠 Pesos OOF aprendidos pelo Meta-Learner (LGB, XGB, RF): {meta_coefs}")
-        mlflow.log_params({f"meta_coef_{name}": float(coef) for name, coef in zip(["lgbm", "xgboost", "rf"], meta_coefs)})
+
+        mlflow.log_params(
+            {f"meta_coef_{name}": float(coef) for name, coef in zip(["lgbm", "xgboost", "rf"], meta_coefs)}
+        )
+
+        mlflow.log_param(
+            "stacking_cv_strategy",
+            type(cv_strategy).__name__,
+        )
+
+        mlflow.log_param(
+            "stacking_cv_n_splits",
+            cv_strategy.n_splits,
+        )
 
         # Previsões
         train_preds_fc = ensemble.predict(X_train)
@@ -154,13 +224,11 @@ def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, trai
         mlflow.log_metric("train_nmae_pct", train_nmae_pct)
         mlflow.log_metric("train_mae_fc_pct", train_mae_fc_pct)
         # Mantendo os nomes exatos originais
-        mlflow.log_metric("oot_mae_mw_2026", test_mae_mw)
-        mlflow.log_metric("oot_nmae_pct_2026", test_nmae_pct)
-        mlflow.log_metric("oot_mae_fc_pct_2026", test_mae_fc_pct)
-        mlflow.log_metric("oot_r2_score_2026", test_r2)
-        
-        # Log extra genérico para garantir que o Quality Gate do Prefect e outros processos não quebrem
         mlflow.log_metric("oot_mae_mw", test_mae_mw)
+        mlflow.log_metric("oot_nmae_pct", test_nmae_pct)
+        mlflow.log_metric("oot_mae_fc_pct", test_mae_fc_pct)
+        mlflow.log_metric("oot_r2_score", test_r2)
+
 
         print("✅ Treino do Stacking Ensemble concluído!")
         print(f"📊 Desempenho TREINO: MAE: {train_mae_mw:.2f} MW | nMAE: {train_nmae_pct:.2f}% | MAE_FC: {train_mae_fc_pct:.2f}%")
@@ -248,10 +316,19 @@ def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, trai
         # 🛡️ REGISTRO DO MODELO COM TRUSTED TYPES
         # ==============================================================================
         trusted_types = [
-            "collections.OrderedDict", "lightgbm.basic.Booster", "lightgbm.sklearn.LGBMRegressor",
-            "sklearn.tree._tree.Tree", "sklearn.utils._bunch.Bunch", "xgboost.core.Booster",
-            "xgboost.sklearn.XGBRegressor", "sklearn.linear_model._base.LinearRegression",
-            "sklearn.model_selection._split.KFold"
+            "collections.OrderedDict",
+            "lightgbm.basic.Booster",
+            "lightgbm.sklearn.LGBMRegressor",
+            "sklearn.tree._tree.Tree",
+            "sklearn.utils._bunch.Bunch",
+            "xgboost.core.Booster",
+            "xgboost.sklearn.XGBRegressor",
+            "sklearn.linear_model._base.LinearRegression",
+            "sklearn.model_selection._split.TimeSeriesSplit",
+            (
+                "energy_mlops.models.temporal_stacking."
+                "TemporalStackingRegressor"
+            ),
         ]
 
         signature = infer_signature(X_test, test_preds_fc)
@@ -263,6 +340,7 @@ def train_stacking_regressor(df_train: pd.DataFrame, df_test: pd.DataFrame, trai
             registered_model_name=model_name,
             skops_trusted_types=trusted_types,
             signature=signature,
+            input_example=X_test.head(1),
         )
         
         return run_id, float(test_mae_mw)

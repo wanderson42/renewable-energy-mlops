@@ -48,6 +48,112 @@ def test_generate_wind_and_time_features_capacity_merge_asof():
     # Em 2024-11-01 a capacidade esperada no histórico é maior que 10403.3
     assert df_out.loc[0, "capacidade_mw"] >= 10403.3
 
+def test_wind_speed_roll_mean_does_not_use_future_values():
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-01 00:00:00",
+                    "2026-08-01 01:00:00",
+                    "2026-08-01 02:00:00",
+                    "2026-08-01 03:00:00",
+                ]
+            ),
+            "temperature_2m": [
+                25.0,
+                25.0,
+                25.0,
+                25.0,
+            ],
+            "wind_speed_100m": [
+                10.0,
+                20.0,
+                30.0,
+                40.0,
+            ],
+            "wind_direction_100m": [
+                180.0,
+                180.0,
+                180.0,
+                180.0,
+            ],
+        }
+    )
+
+    original = generate_wind_and_time_features(df)
+
+    df_future_changed = df.copy()
+
+    # Altera t2, que é futuro em relação a t0 e t1.
+    df_future_changed.loc[
+        2,
+        "wind_speed_100m",
+    ] = 1000.0
+
+    changed = generate_wind_and_time_features(
+        df_future_changed
+    )
+
+    assert (
+        original.loc[0, "wind_speed_roll_mean_3h"]
+        == changed.loc[0, "wind_speed_roll_mean_3h"]
+    )
+
+    assert (
+        original.loc[1, "wind_speed_roll_mean_3h"]
+        == changed.loc[1, "wind_speed_roll_mean_3h"]
+    )
+
+
+def test_wind_speed_roll_mean_3h_is_causal():
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-01 00:00:00",
+                    "2026-08-01 01:00:00",
+                    "2026-08-01 02:00:00",
+                    "2026-08-01 03:00:00",
+                ]
+            ),
+            "temperature_2m": [
+                25.0,
+                25.0,
+                25.0,
+                25.0,
+            ],
+            "wind_speed_100m": [
+                10.0,
+                20.0,
+                30.0,
+                40.0,
+            ],
+            "wind_direction_100m": [
+                180.0,
+                180.0,
+                180.0,
+                180.0,
+            ],
+        }
+    )
+
+    result = generate_wind_and_time_features(df)
+
+    expected = pd.Series(
+        [
+            10.0,
+            15.0,
+            20.0,
+            30.0,
+        ],
+        name="wind_speed_roll_mean_3h",
+    )
+
+    pd.testing.assert_series_equal(
+        result["wind_speed_roll_mean_3h"],
+        expected,
+        check_index_type=False,
+    )
 
 def test_target_fc_clipping():
     """Garante que a taxa de geração (target_fc) seja limitada entre 0.0 e 1.0."""

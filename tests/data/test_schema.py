@@ -1,10 +1,9 @@
-# Testes do Pandera (Extratores): src/energy_mlops/data/schema_data.py
+# Testes do Pandera (Extratores): src/energy_mlops/data/schema.py
 import pandas as pd
 import pandera as pa
 import pytest
 
-# Ajuste o import conforme o caminho real no seu projeto (ex: schema_data.py)
-from energy_mlops.data.schema_data import EnergySchema, WeatherSchema
+from energy_mlops.data.schema import EnergySchema, WeatherSchema
 
 
 def test_weather_schema_valid():
