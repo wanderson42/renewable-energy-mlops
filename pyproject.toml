@@ -1,9 +1,23 @@
-[tool.poetry]
+[project]
 name = "energy-mlops"
 version = "0.1.0"
-description = ""
-authors = ["Wanderson <wlferreira@alumni.usp.br>"]
+description = "End-to-end MLOps system for day-ahead wind power forecasting in Bahia, Brazil."
+authors = [
+    { name = "Wanderson", email = "wlferreira@alumni.usp.br" },
+]
 readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14,<3.15"
+dynamic = ["dependencies"]
+keywords = [
+    "mlops",
+    "wind-energy",
+    "time-series",
+    "mlflow",
+    "prefect",
+    "kubernetes",
+]
+
 
 [tool.poetry.dependencies]
 python = ">=3.14, <3.15"

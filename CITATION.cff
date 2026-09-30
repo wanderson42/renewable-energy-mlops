@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this project, please cite it as below."
+title: "Renewable Energy MLOps — Wind Power Forecasting"
+type: software
+authors:
+  - given-names: Wanderson
+    family-names: Ferreira
+repository-code: "https://github.com/wanderson42/renewable-energy-mlops"
+license: MIT
