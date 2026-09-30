@@ -526,3 +526,48 @@ def test_train_stacking_regressor_happy_path():
     mock_shap.TreeExplainer.assert_called_once_with(
         fake_lgb
     )
+
+def test_train_stacking_regressor_rejects_missing_best_params():
+    """
+    O pipeline pode operar sem optimizer, mas o trainer de Temporal
+    Stacking exige parâmetros produzidos pela otimização.
+    """
+
+    df_train = pd.DataFrame()
+    df_test = pd.DataFrame()
+
+    with pytest.raises(
+        ValueError,
+        match="best_params",
+    ):
+        training_module.train_stacking_regressor(
+            df_train=df_train,
+            df_test=df_test,
+            train_file="train.parquet",
+            test_file="test.parquet",
+            best_params=None,
+            optimization_run_id="optimization-run-123",
+        )
+
+
+def test_train_stacking_regressor_rejects_missing_optimization_run_id():
+    """
+    O Temporal Stacking também exige a Optimization Run para manter
+    a linhagem entre otimização e treinamento.
+    """
+
+    df_train = pd.DataFrame()
+    df_test = pd.DataFrame()
+
+    with pytest.raises(
+        ValueError,
+        match="optimization_run_id",
+    ):
+        training_module.train_stacking_regressor(
+            df_train=df_train,
+            df_test=df_test,
+            train_file="train.parquet",
+            test_file="test.parquet",
+            best_params={},
+            optimization_run_id=None,
+        )

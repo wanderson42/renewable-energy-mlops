@@ -80,13 +80,26 @@ def train_stacking_regressor(
     df_test: pd.DataFrame,
     train_file: str,
     test_file: str,
-    best_params: dict,
-    optimization_run_id: str,
+    best_params: dict | None = None,
+    optimization_run_id: str | None = None,
 ) -> tuple[str, float]:
     """
     Treina o modelo, registra todos os metadados (SHAP, trusted_types, métricas ricas) 
     e retorna o ID da Run e o MAE para o orquestrador (Prefect).
     """
+
+    if best_params is None:
+        raise ValueError(
+            "O Temporal Stacking requer 'best_params' "
+            "produzidos por uma etapa de otimização."
+        )
+
+    if optimization_run_id is None:
+        raise ValueError(
+            "O Temporal Stacking requer "
+            "'optimization_run_id' para rastreabilidade."
+        )
+
     X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = (
         prepare_features(df_train, df_test)
     )

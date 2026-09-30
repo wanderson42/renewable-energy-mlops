@@ -1,7 +1,7 @@
 import argparse
 import calendar
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 from prefect import flow
@@ -30,7 +30,7 @@ def historical_backfill_flow(
     
     monthly_dfs: list[pd.DataFrame] = []
 
-    now_utc = datetime.now(tz=timezone.utc)
+    now_utc = datetime.now(tz=UTC)
     current_year = now_utc.year
     current_month = now_utc.month
 

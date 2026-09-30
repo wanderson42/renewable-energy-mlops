@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from energy_mlops.pipelines import training_flow
 from energy_mlops.pipelines.training_flow import (
     continuous_training_pipeline,
     resolve_metric,
@@ -165,3 +166,129 @@ def test_continuous_training_pipeline_orchestration(
         "fake_run_id_999",
         3.14,
     )
+
+def test_execute_training_without_optimizer_passes_none_to_trainer():
+    """
+    Um trainer independente de otimização deve receber explicitamente
+    best_params=None e optimization_run_id=None.
+    """
+
+    received = {}
+
+    def independent_trainer(
+        df_train,
+        df_test,
+        train_file,
+        test_file,
+        best_params=None,
+        optimization_run_id=None,
+    ):
+        received["df_train"] = df_train
+        received["df_test"] = df_test
+        received["train_file"] = train_file
+        received["test_file"] = test_file
+        received["best_params"] = best_params
+        received["optimization_run_id"] = optimization_run_id
+
+        return "independent-run-123", 321.5
+
+    df_train = pd.DataFrame({"value": [1, 2]})
+    df_test = pd.DataFrame({"value": [3]})
+
+    run_id, mae = training_flow.execute_training.fn(
+        trainer_func=independent_trainer,
+        optimization_result=None,
+        df_train=df_train,
+        df_test=df_test,
+        train_file="train.parquet",
+        test_file="test.parquet",
+    )
+
+    assert run_id == "independent-run-123"
+    assert mae == pytest.approx(321.5)
+
+    assert received["df_train"] is df_train
+    assert received["df_test"] is df_test
+    assert received["train_file"] == "train.parquet"
+    assert received["test_file"] == "test.parquet"
+
+    assert received["best_params"] is None
+    assert received["optimization_run_id"] is None
+
+
+def test_continuous_training_pipeline_skips_optimizer_when_none():
+    """
+    optimizer_name='none' deve pular completamente a etapa de otimização
+    e encaminhar optimization_result=None para o treinamento.
+    """
+
+    df_train = pd.DataFrame({"value": [1, 2]})
+    df_test = pd.DataFrame({"value": [3]})
+
+    fake_datasets = (
+        df_train,
+        df_test,
+        "train.parquet",
+        "test.parquet",
+    )
+
+    with (
+        patch.object(
+            training_flow,
+            "fetch_expanding_window_data",
+            return_value=fake_datasets,
+        ) as mock_fetch,
+        patch.object(
+            training_flow,
+            "optimize_hyperparameters",
+        ) as mock_optimize,
+        patch.object(
+            training_flow,
+            "execute_training",
+            return_value=("challenger-run-123", 456.7),
+        ) as mock_training,
+        patch.object(
+            training_flow,
+            "evaluate_and_promote",
+        ) as mock_quality_gate,
+    ):
+        training_flow.continuous_training_pipeline.fn(
+            trainer_name="stacking",
+            optimizer_name="none",
+        )
+
+    mock_fetch.assert_called_once()
+
+    # O ponto principal do teste:
+    # optimizer_name="none" não deve executar Optuna.
+    mock_optimize.assert_not_called()
+
+    mock_training.assert_called_once_with(
+        trainer_func=training_flow.TRAINER_REGISTRY["stacking"],
+        optimization_result=None,
+        df_train=df_train,
+        df_test=df_test,
+        train_file="train.parquet",
+        test_file="test.parquet",
+    )
+
+    mock_quality_gate.assert_called_once_with(
+        "challenger-run-123",
+        456.7,
+    )
+
+
+def test_continuous_training_pipeline_rejects_unknown_optimizer():
+    """
+    Um nome de optimizer inexistente deve ser tratado como erro
+    de configuração, e não confundido com optimizer_name='none'.
+    """
+
+    with pytest.raises(
+        ValueError,
+        match="Optimizer 'unknown' não encontrado no Registry",
+    ):
+        training_flow.continuous_training_pipeline.fn(
+            trainer_name="stacking",
+            optimizer_name="unknown",
+        )

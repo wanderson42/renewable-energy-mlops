@@ -55,3 +55,6 @@ mlflow.db
 # Evidências locais de validação
 validation_*/
 pytest_full_suite.txt
+
+# Local datasets / Data Lake fallbacks
+data/**/*.parquet

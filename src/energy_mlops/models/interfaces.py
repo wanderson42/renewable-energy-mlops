@@ -1,4 +1,5 @@
 # src/energy_mlops/models/interfaces.py
+
 from typing import Protocol, TypedDict
 
 import pandas as pd
@@ -12,7 +13,13 @@ class OptimizationResult(TypedDict):
 
 
 class ModelTrainer(Protocol):
-    """Contrato de Interface para Algoritmos de Treinamento."""
+    """
+    Contrato de interface para algoritmos de treinamento.
+
+    Um trainer pode consumir ou não uma etapa de otimização anterior.
+    Quando não houver optimizer, ``best_params`` e
+    ``optimization_run_id`` serão ``None``.
+    """
 
     def __call__(
         self,
@@ -20,14 +27,14 @@ class ModelTrainer(Protocol):
         df_test: pd.DataFrame,
         train_file: str,
         test_file: str,
-        best_params: dict,
-        optimization_run_id: str,
+        best_params: dict | None = None,
+        optimization_run_id: str | None = None,
     ) -> tuple[str, float]:
         ...
 
 
 class ModelOptimizer(Protocol):
-    """Contrato de Interface para Algoritmos de Otimização."""
+    """Contrato de interface para algoritmos de otimização."""
 
     def __call__(
         self,

@@ -22,9 +22,7 @@ from energy_mlops.models.optimize_stacking_ensemble import (
 from energy_mlops.models.train_stacking_ensemble import (
     train_stacking_regressor as default_stacking_trainer,
 )
-from energy_mlops.pipelines.utils import (
-    save_dataset_to_lake_or_local,
-)
+from energy_mlops.pipelines.utils import save_dataset_to_lake_or_local
 
 # ==============================================================================
 # CONFIGURAÇÃO
@@ -48,6 +46,7 @@ os.environ["AWS_ENDPOINT_URL"] = settings.RUSTFS_ENDPOINT
 # ==============================================================================
 # HELPERS DE CONTRATO DE MÉTRICAS
 # ==============================================================================
+
 
 def resolve_metric(
     metrics: Mapping[str, Any],
@@ -115,7 +114,7 @@ def resolve_metric(
         )
 
         logger.warning(
-            f"⚠️ Usando métrica legada "
+            "⚠️ Usando métrica legada "
             f"'{metric_name}' como fallback para "
             f"'{canonical_name}'."
         )
@@ -130,14 +129,14 @@ def resolve_metric(
 
         raise RuntimeError(
             f"Métrica '{canonical_name}' ausente e "
-            f"foram encontradas múltiplas variantes "
+            "foram encontradas múltiplas variantes "
             f"legadas: {candidates}. "
             "A seleção seria ambígua."
         )
 
     if required:
         raise RuntimeError(
-            f"Métrica obrigatória "
+            "Métrica obrigatória "
             f"'{canonical_name}' não encontrada."
         )
 
@@ -172,6 +171,7 @@ def get_required_num_features(
 # ==============================================================================
 # PASSO 1: EXTRAÇÃO, PERSISTÊNCIA E PADRONIZAÇÃO DE DATASETS
 # ==============================================================================
+
 
 @task(
     name="1. Extrair e Salvar Janela Expansiva",
@@ -348,22 +348,22 @@ def fetch_expanding_window_data(
 # PASSO 2: OTIMIZAÇÃO E TREINAMENTO AGNÓSTICO
 # ==============================================================================
 
+
 @task(
     name="2. Otimizar Hiperparâmetros (Agnóstico)",
     retries=1,
 )
 def optimize_hyperparameters(
-    optimizer_func: ModelOptimizer | None,
+    optimizer_func: ModelOptimizer,
     df_train: pd.DataFrame,
     train_file: str,
 ) -> OptimizationResult:
+    """
+    Executa uma estratégia de otimização registrada.
 
-    if optimizer_func is None:
-        raise ValueError(
-            "O treinamento configurado exige "
-            "uma execução de otimização, mas "
-            "optimizer_func é None."
-        )
+    Esta task somente é chamada quando existe um optimizer configurado.
+    A ausência deliberada de otimização é tratada pelo orquestrador.
+    """
 
     result = optimizer_func(
         df_train=df_train,
@@ -374,8 +374,7 @@ def optimize_hyperparameters(
 
     if not result:
         raise RuntimeError(
-            "O otimizador não retornou "
-            "um resultado válido."
+            "O otimizador não retornou um resultado válido."
         )
 
     if "optimization_run_id" not in result:
@@ -392,8 +391,7 @@ def optimize_hyperparameters(
 
     logger.info(
         "✅ Otimização concluída. "
-        "Run MLflow: "
-        f"{result['optimization_run_id']}"
+        f"Run MLflow: {result['optimization_run_id']}"
     )
 
     return result
@@ -405,16 +403,20 @@ def optimize_hyperparameters(
 )
 def execute_training(
     trainer_func: ModelTrainer,
-    optimization_result: OptimizationResult,
+    optimization_result: OptimizationResult | None,
     df_train: pd.DataFrame,
     df_test: pd.DataFrame,
     train_file: str,
     test_file: str,
 ) -> tuple[str, float]:
     """
-    Executa o treinamento utilizando explicitamente
-    os hiperparâmetros produzidos pela execução atual
-    da otimização.
+    Executa um trainer agnóstico.
+
+    Se houver uma etapa de otimização anterior, seus parâmetros
+    e sua Run MLflow são propagados para o trainer.
+
+    Trainers que não exigem otimização recebem ``None`` para
+    ``best_params`` e ``optimization_run_id``.
     """
 
     logger.info(
@@ -422,23 +424,30 @@ def execute_training(
         f"{trainer_func.__name__}"
     )
 
-    optimization_run_id = (
-        optimization_result[
-            "optimization_run_id"
-        ]
-    )
+    if optimization_result is None:
+        best_params = None
+        optimization_run_id = None
 
-    best_params = (
-        optimization_result[
+        logger.info(
+            "ℹ️ Treinamento configurado sem etapa "
+            "de otimização."
+        )
+
+    else:
+        best_params = optimization_result[
             "best_params"
         ]
-    )
 
-    logger.info(
-        "🔗 Treinamento vinculado à "
-        "Optimization Run: "
-        f"{optimization_run_id}"
-    )
+        optimization_run_id = (
+            optimization_result[
+                "optimization_run_id"
+            ]
+        )
+
+        logger.info(
+            "🔗 Treinamento vinculado à Optimization Run: "
+            f"{optimization_run_id}"
+        )
 
     run_id, mae = trainer_func(
         df_train,
@@ -446,9 +455,7 @@ def execute_training(
         train_file,
         test_file,
         best_params=best_params,
-        optimization_run_id=(
-            optimization_run_id
-        ),
+        optimization_run_id=optimization_run_id,
     )
 
     return run_id, mae
@@ -457,6 +464,7 @@ def execute_training(
 # ==============================================================================
 # PASSO 3: QUALITY GATE — CHAMPION VS CHALLENGER
 # ==============================================================================
+
 
 def get_registered_model_version(
     client: MlflowClient,
@@ -781,9 +789,11 @@ def evaluate_and_promote(
 # REGISTRY DE DEPENDÊNCIAS
 # ==============================================================================
 
+
 TRAINER_REGISTRY = {
     "stacking": default_stacking_trainer,
 }
+
 
 OPTIMIZER_REGISTRY = {
     "stacking": default_stacking_optimizer,
@@ -794,6 +804,7 @@ OPTIMIZER_REGISTRY = {
 # ==============================================================================
 # FLUXO PRINCIPAL PREFECT — ORQUESTRADOR CT
 # ==============================================================================
+
 
 @flow(
     name=(
@@ -808,20 +819,19 @@ def continuous_training_pipeline(
     """
     Orquestrador agnóstico de treinamento contínuo.
 
-    A execução atual da otimização produz
-    explicitamente os parâmetros consumidos
-    pela execução atual do treinamento.
+    O trainer é obrigatório. A etapa de otimização é opcional:
+
+    - um optimizer registrado executa antes do treinamento;
+    - ``optimizer_name="none"`` pula explicitamente essa etapa;
+    - nomes desconhecidos falham antes da execução do pipeline.
+
+    Quando não há otimização, o trainer recebe ``None`` em
+    ``best_params`` e ``optimization_run_id``.
     """
 
     trainer_algorithm = (
         TRAINER_REGISTRY.get(
             trainer_name
-        )
-    )
-
-    optimizer_algorithm = (
-        OPTIMIZER_REGISTRY.get(
-            optimizer_name
         )
     )
 
@@ -831,12 +841,32 @@ def continuous_training_pipeline(
             "não encontrado no Registry."
         )
 
+    # Diferencia explicitamente:
+    #
+    # "none"      -> ausência intencional de otimização
+    # "stacking"  -> optimizer registrado
+    # outro nome  -> erro de configuração
+    if optimizer_name not in OPTIMIZER_REGISTRY:
+        raise ValueError(
+            f"Optimizer '{optimizer_name}' "
+            "não encontrado no Registry."
+        )
+
+    optimizer_algorithm = (
+        OPTIMIZER_REGISTRY[
+            optimizer_name
+        ]
+    )
+
     logger.info(
         "🚀 Iniciando Pipeline de "
         "Treinamento Contínuo (CT)..."
     )
 
-    # 1. Dados
+    # ==========================================================================
+    # 1. DADOS
+    # ==========================================================================
+
     (
         df_train,
         df_test,
@@ -844,19 +874,33 @@ def continuous_training_pipeline(
         test_file,
     ) = fetch_expanding_window_data()
 
-    # 2. Otimização
-    optimization_result = (
-        optimize_hyperparameters(
-            optimizer_func=(
-                optimizer_algorithm
-            ),
-            df_train=df_train,
-            train_file=train_file,
-        )
-    )
+    # ==========================================================================
+    # 2. OTIMIZAÇÃO OPCIONAL
+    # ==========================================================================
 
-    # 3. Treinamento usando explicitamente
-    #    o resultado da otimização atual.
+    if optimizer_algorithm is None:
+        optimization_result = None
+
+        logger.info(
+            "ℹ️ Pipeline configurado sem etapa "
+            "de otimização."
+        )
+
+    else:
+        optimization_result = (
+            optimize_hyperparameters(
+                optimizer_func=(
+                    optimizer_algorithm
+                ),
+                df_train=df_train,
+                train_file=train_file,
+            )
+        )
+
+    # ==========================================================================
+    # 3. TREINAMENTO
+    # ==========================================================================
+
     (
         challenger_run_id,
         challenger_mae,
@@ -871,7 +915,10 @@ def continuous_training_pipeline(
         test_file=test_file,
     )
 
-    # 4. Quality Gate
+    # ==========================================================================
+    # 4. QUALITY GATE
+    # ==========================================================================
+
     evaluate_and_promote(
         challenger_run_id,
         challenger_mae,
