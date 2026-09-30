@@ -8,6 +8,7 @@ import pytest
 
 import energy_mlops.models.train_stacking_ensemble as training_module
 from energy_mlops.data.feature_utils import get_model_feature_columns
+from energy_mlops.models.ensemble_config import validate_enabled_estimators
 
 
 def make_model_dataframe(
@@ -571,3 +572,185 @@ def test_train_stacking_regressor_rejects_missing_optimization_run_id():
             best_params={},
             optimization_run_id=None,
         )
+
+
+def test_validate_enabled_estimators_accepts_full_ensemble():
+    assert validate_enabled_estimators(
+        ("lgbm", "xgboost", "rf")
+    ) == (
+        "lgbm",
+        "xgboost",
+        "rf",
+    )
+
+
+def test_validate_enabled_estimators_accepts_lgbm_rf():
+    assert validate_enabled_estimators(
+        ("lgbm", "rf")
+    ) == (
+        "lgbm",
+        "rf",
+    )
+
+
+def test_validate_enabled_estimators_rejects_unknown_model():
+    with pytest.raises(
+        ValueError,
+        match="não suportados",
+    ):
+        validate_enabled_estimators(
+            ("lgbm", "catboost")
+        )
+
+
+def test_validate_enabled_estimators_rejects_single_model():
+    with pytest.raises(
+        ValueError,
+        match="pelo menos dois",
+    ):
+        validate_enabled_estimators(
+            ("lgbm",)
+        )
+
+def test_train_stacking_regressor_builds_lgbm_rf_only():
+    df_train = make_model_dataframe(
+        target_fc=[
+            0.40,
+            0.50,
+            0.60,
+        ],
+        wind_generation_mw=[
+            40.0,
+            50.0,
+            60.0,
+        ],
+    )
+
+    df_test = make_model_dataframe(
+        target_fc=[
+            0.55,
+            0.60,
+            0.65,
+        ],
+        wind_generation_mw=[
+            55.0,
+            60.0,
+            65.0,
+        ],
+    )
+
+    best_params = {
+        "lgb_params": {
+            "n_estimators": 200,
+        },
+        "rf_params": {
+            "n_estimators": 150,
+        },
+    }
+
+    fake_lgb = MagicMock()
+    fake_rf = MagicMock()
+
+    fake_ensemble = MagicMock()
+
+    # Interrompe deliberadamente depois da construção
+    # do ensemble. Assim este teste verifica apenas
+    # o contrato arquitetural.
+    fake_ensemble.fit.side_effect = RuntimeError(
+        "stop-after-ensemble-construction"
+    )
+
+    fake_client = MagicMock()
+    fake_client.get_experiment_by_name.return_value = None
+
+    fake_run = SimpleNamespace(
+        info=SimpleNamespace(
+            run_id="training-run-lgb-rf",
+        )
+    )
+
+    with (
+        patch.object(
+            training_module,
+            "mlflow",
+        ) as mock_mlflow,
+        patch.object(
+            training_module,
+            "MlflowClient",
+            return_value=fake_client,
+        ),
+        patch.object(
+            training_module.lgb,
+            "LGBMRegressor",
+            return_value=fake_lgb,
+        ) as mock_lgb,
+        patch.object(
+            training_module,
+            "XGBRegressor",
+        ) as mock_xgb,
+        patch.object(
+            training_module,
+            "RandomForestRegressor",
+            return_value=fake_rf,
+        ) as mock_rf,
+        patch.object(
+            training_module,
+            "LinearRegression",
+            return_value=MagicMock(),
+        ),
+        patch.object(
+            training_module,
+            "TemporalStackingRegressor",
+            return_value=fake_ensemble,
+        ) as mock_stacking,
+    ):
+        mock_mlflow.start_run.return_value.__enter__.return_value = (
+            fake_run
+        )
+
+        mock_mlflow.data.from_pandas.side_effect = [
+            "train-dataset",
+            "test-dataset",
+        ]
+
+        with pytest.raises(
+            RuntimeError,
+            match="stop-after-ensemble-construction",
+        ):
+            training_module.train_stacking_regressor(
+                df_train=df_train,
+                df_test=df_test,
+                train_file="train.parquet",
+                test_file="test.parquet",
+                best_params=best_params,
+                optimization_run_id="optimization-run-lgb-rf",
+                enabled_estimators=(
+                    "lgbm",
+                    "rf",
+                ),
+            )
+
+    mock_lgb.assert_called_once_with(
+        **best_params["lgb_params"]
+    )
+
+    mock_rf.assert_called_once_with(
+        **best_params["rf_params"]
+    )
+
+    mock_xgb.assert_not_called()
+
+    stacking_kwargs = (
+        mock_stacking.call_args.kwargs
+    )
+
+    estimator_names = [
+        name
+        for name, _
+        in stacking_kwargs["estimators"]
+    ]
+
+    assert estimator_names == [
+        "lgbm",
+        "rf",
+    ]
