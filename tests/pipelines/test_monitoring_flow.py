@@ -1,11 +1,15 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from energy_mlops.data.feature_utils import get_model_feature_columns
 from energy_mlops.pipelines import monitoring_flow
+from energy_mlops.pipelines.monitoring_flow import (
+    align_features_to_model,
+)
 
 ''''
     Testes unitários para o pipeline de monitoramento.
@@ -250,6 +254,12 @@ def test_evaluate_performance_drift_without_degradation():
     )
 
     fake_model = MagicMock()
+
+    fake_model.feature_names_in_ = np.array(
+        X_cur.columns.tolist(),
+        dtype=object
+    )
+
     fake_model.predict.return_value = [
         0.50,
         0.50,
@@ -261,6 +271,7 @@ def test_evaluate_performance_drift_without_degradation():
     fake_client.get_model_version_by_alias.return_value = (
         SimpleNamespace(
             run_id="champion-run-123",
+            version=10,
         )
     )
 
@@ -335,6 +346,12 @@ def test_evaluate_performance_drift_detects_degradation():
     )
 
     fake_model = MagicMock()
+
+    fake_model.feature_names_in_ = np.array(
+        X_cur.columns.tolist(),
+        dtype=object
+    )
+
     fake_model.predict.return_value = [
         0.50,
         0.50,
@@ -346,6 +363,7 @@ def test_evaluate_performance_drift_detects_degradation():
     fake_client.get_model_version_by_alias.return_value = (
         SimpleNamespace(
             run_id="champion-run-123",
+            version=10,
         )
     )
 
@@ -402,6 +420,12 @@ def test_evaluate_performance_drift_uses_legacy_metric_fallback():
     )
 
     fake_model = MagicMock()
+
+    fake_model.feature_names_in_ = np.array(
+        X_cur.columns.tolist(),
+        dtype=object
+    )
+
     fake_model.predict.return_value = [
         0.50,
         0.50,
@@ -413,6 +437,7 @@ def test_evaluate_performance_drift_uses_legacy_metric_fallback():
     fake_client.get_model_version_by_alias.return_value = (
         SimpleNamespace(
             run_id="legacy-champion-run",
+            version=10,
         )
     )
 
@@ -766,3 +791,71 @@ def test_batch_monitoring_pipeline_does_not_train_without_drift(
     )
 
     mock_training.assert_not_called()
+
+
+def test_align_features_to_model_uses_model_order():
+    model = SimpleNamespace(
+        feature_names_in_=np.array(
+            [
+                "wind_speed_100m",
+                "wind_direction_100m",
+                "temperature_2m",
+            ]
+        )
+    )
+
+    X = pd.DataFrame(
+        {
+            "temperature_2m": [25.0],
+            "wind_speed_100m": [8.0],
+            "wind_direction_100m": [180.0],
+        }
+    )
+
+    original_order = list(
+        X.columns
+    )
+
+    result = align_features_to_model(
+        model,
+        X,
+    )
+
+    assert list(
+        result.columns
+    ) == [
+        "wind_speed_100m",
+        "wind_direction_100m",
+        "temperature_2m",
+    ]
+
+    # O contrato/DataFrame original não é mutado.
+    assert list(
+        X.columns
+    ) == original_order
+
+
+def test_align_features_to_model_rejects_missing_feature():
+    model = SimpleNamespace(
+        feature_names_in_=np.array(
+            [
+                "wind_speed_100m",
+                "temperature_2m",
+            ]
+        )
+    )
+
+    X = pd.DataFrame(
+        {
+            "temperature_2m": [25.0],
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Features obrigatórias",
+    ):
+        align_features_to_model(
+            model,
+            X,
+        )
