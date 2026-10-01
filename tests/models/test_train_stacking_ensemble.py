@@ -754,3 +754,43 @@ def test_train_stacking_regressor_builds_lgbm_rf_only():
         "lgbm",
         "rf",
     ]
+
+
+@pytest.mark.parametrize(
+    (
+        "enabled_estimators",
+        "expected_run_name",
+        "expected_model_name",
+    ),
+    [
+        (
+            ("lgbm", "xgboost", "rf"),
+            "Stacking_LGB_XGB_RF_Bahia",
+            "ensemble_lgb_xgb_rf_bahia",
+        ),
+        (
+            ("lgbm", "rf"),
+            "Stacking_LGB_RF_Bahia",
+            "ensemble_lgb_rf_bahia",
+        ),
+        (
+            ("lgbm", "xgboost"),
+            "Stacking_LGB_XGB_Bahia",
+            "ensemble_lgb_xgb_bahia",
+        ),
+    ],
+)
+def test_build_architecture_names(
+    enabled_estimators,
+    expected_run_name,
+    expected_model_name,
+):
+    run_name, model_name = (
+        training_module
+        .build_architecture_names(
+            enabled_estimators
+        )
+    )
+
+    assert run_name == expected_run_name
+    assert model_name == expected_model_name

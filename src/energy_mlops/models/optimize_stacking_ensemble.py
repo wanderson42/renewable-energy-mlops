@@ -704,6 +704,12 @@ def run_optimization(
             architecture_str,
         )
 
+        # Temporário — benchmark de simplificação v0.2.0
+        mlflow.set_tag(
+            "experiment_family",
+            "ensemble_simplification_v0.2.0",
+        )
+
         # ------------------------------------------------------
         # Governança da otimização
         # ------------------------------------------------------

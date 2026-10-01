@@ -60,6 +60,53 @@ base models são refitados em TODO o X_train
          modelo final
 '''
 
+
+ESTIMATOR_NAME_TOKENS = {
+    "lgbm": "lgb",
+    "xgboost": "xgb",
+    "rf": "rf",
+}
+
+
+def build_architecture_names(
+    enabled_estimators: tuple[str, ...],
+) -> tuple[str, str]:
+    """
+    Gera nomes determinísticos da Run e do
+    Registered Model a partir da arquitetura.
+    """
+
+    unknown_estimators = (
+        set(enabled_estimators)
+        - set(ESTIMATOR_NAME_TOKENS)
+    )
+
+    if unknown_estimators:
+        raise ValueError(
+            "Estimators sem nomenclatura definida: "
+            f"{sorted(unknown_estimators)}"
+        )
+
+    architecture_slug = "_".join(
+        ESTIMATOR_NAME_TOKENS[name]
+        for name in enabled_estimators
+    )
+
+    run_name = (
+        f"Stacking_"
+        f"{architecture_slug.upper()}"
+        f"_Bahia"
+    )
+
+    model_name = (
+        f"ensemble_"
+        f"{architecture_slug}"
+        f"_bahia"
+    )
+
+    return run_name, model_name
+
+
 def prepare_features(
     df_train: pd.DataFrame,
     df_test: pd.DataFrame,
@@ -109,6 +156,11 @@ def train_stacking_regressor(
 
     enabled_estimators = validate_enabled_estimators(enabled_estimators)
 
+    run_name, model_name = (
+        build_architecture_names(
+            enabled_estimators
+        )
+    )
 
     X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = (
         prepare_features(df_train, df_test)
@@ -122,7 +174,50 @@ def train_stacking_regressor(
         client.restore_experiment(experiment.experiment_id)
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name="Stacking_LGB_XGB_RF_Bahia") as run:
+    with mlflow.start_run(run_name=run_name) as run:
+
+        architecture_str = ",".join(
+            enabled_estimators
+        )
+
+        # ------------------------------------------------------
+        # Arquitetura
+        # ------------------------------------------------------
+
+        mlflow.log_param(
+            "base_estimators",
+            architecture_str,
+        )
+
+        mlflow.log_param(
+            "n_base_estimators",
+            len(enabled_estimators),
+        )
+
+        mlflow.set_tag(
+            "ensemble_architecture",
+            architecture_str,
+        )
+
+        # Temporário — benchmark de simplificação v0.2.0
+        mlflow.set_tag(
+            "experiment_family",
+            "ensemble_simplification_v0.2.0",
+        )
+
+        mlflow.set_tag(
+            "architecture_run_name",
+            run_name,
+        )
+
+        mlflow.set_tag(
+            "registered_model_name",
+            model_name,
+        )
+
+        # ------------------------------------------------------
+        # Linhagem da otimização
+        # ------------------------------------------------------
 
         mlflow.set_tag(
             "optimization_run_id",
@@ -391,9 +486,22 @@ def train_stacking_regressor(
 
         mlflow.log_dict(model_summary, "model_summary.json")
         
-        arch_str = f"{type(ensemble).__name__} ({', '.join(meta_weights.keys())}) -> {type(ensemble.final_estimator_).__name__}"
-        mlflow.set_tag("architecture_str", arch_str)
-        mlflow.set_tag("meta_weights_json", json.dumps(meta_weights))
+        architecture_summary = (
+            f"{type(ensemble).__name__} "
+            f"({', '.join(meta_weights.keys())}) "
+            f"-> "
+            f"{type(ensemble.final_estimator_).__name__}"
+        )
+
+        mlflow.set_tag(
+            "architecture_str",
+            architecture_summary,
+        )
+
+        mlflow.set_tag(
+            "meta_weights_json",
+            json.dumps(meta_weights),
+        )
 
         # ==============================================================================
         # 🔍 EXPLICABILIDADE SHAP (Restaurada)
@@ -458,7 +566,7 @@ def train_stacking_regressor(
         ]
 
         signature = infer_signature(X_test, test_preds_fc)
-        model_name = "ensemble_lgb_xgb_rf_bahia"
+
 
         mlflow.sklearn.log_model(
             sk_model=ensemble,
