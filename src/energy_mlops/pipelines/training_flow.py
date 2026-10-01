@@ -11,6 +11,7 @@ from mlflow.exceptions import MlflowException
 from prefect import flow, task
 
 from energy_mlops.config import settings
+from energy_mlops.data.snapshot_validation import audit_gold_snapshot
 from energy_mlops.models.interfaces import (
     ModelOptimizer,
     ModelTrainer,
@@ -24,12 +25,62 @@ from energy_mlops.models.train_stacking_ensemble import (
 )
 from energy_mlops.pipelines.utils import save_dataset_to_lake_or_local
 
+"""
+Gold consolidado explícito
+        ↓
+load_gold_snapshot_task
+        ↓
+audit_gold_snapshot_task
+        ↓
+split_expanding_window_task
+        ↓
+split_expanding_window_snapshot   ← única regra de split
+        ↓
+   ┌─────────────┐
+ TRAIN           OOT
+   ↓              ↓
+ audit          audit
+   └──────┬──────┘
+          ↓
+persist_training_datasets_task
+          ↓
+Optuna
+          ↓
+Training
+          ↓
+Quality Gate
+"""
+
 # ==============================================================================
 # CONFIGURAÇÃO
 # ==============================================================================
 
 MODEL_NAME = "ensemble_lgb_xgb_rf_bahia"
 MODEL_ALIAS = "champion"
+LOCAL_TIMEZONE = "America/Sao_Paulo"
+
+DEFAULT_TRAINING_GOLD_SNAPSHOT_PATH = os.getenv(
+    "TRAINING_GOLD_SNAPSHOT_PATH",
+    (
+        f"s3://{settings.RUSTFS_BUCKET}/gold/"
+        "dataset_renewable_energy_2024_03_2026_08.parquet"
+    ),
+)
+
+DEFAULT_OOT_YEAR = int(
+    os.getenv(
+        "TRAINING_OOT_YEAR",
+        "2026",
+    )
+)
+
+DEFAULT_OOT_MONTH = int(
+    os.getenv(
+        "TRAINING_OOT_MONTH",
+        "8",
+    )
+)
+
 
 # Um Challenger com menos features pode ser promovido mesmo sem melhorar o MAE,
 # desde que a degradação de nMAE não ultrapasse esta tolerância.
@@ -169,140 +220,361 @@ def get_required_num_features(
 
 
 # ==============================================================================
-# PASSO 1: EXTRAÇÃO, PERSISTÊNCIA E PADRONIZAÇÃO DE DATASETS
+# PASSO 1: CARREGAMENTO, AUDITORIA, SPLIT E PERSISTÊNCIA DOS DATASETS
 # ==============================================================================
 
 
+def get_local_month_bounds_utc(
+    year: int,
+    month: int,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Retorna os limites UTC correspondentes a um
+    mês civil no timezone operacional da Bahia.
+
+    Os timestamps retornados são timezone-naive,
+    seguindo o contrato atual dos datasets Gold.
+    """
+
+    start_local = pd.Timestamp(
+        year=year,
+        month=month,
+        day=1,
+        tz=LOCAL_TIMEZONE,
+    )
+
+    end_local = (
+        start_local
+        + pd.offsets.MonthBegin(1)
+    )
+
+    start_utc = (
+        start_local
+        .tz_convert("UTC")
+        .tz_localize(None)
+    )
+
+    end_utc = (
+        end_local
+        .tz_convert("UTC")
+        .tz_localize(None)
+    )
+
+    return start_utc, end_utc
+
+
+def split_expanding_window_snapshot(
+    df: pd.DataFrame,
+    *,
+    oot_year: int,
+    oot_month: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Divide um Gold consolidado em treino expansivo
+    e um único mês civil OOT.
+
+    O mês é definido em America/Sao_Paulo e depois
+    convertido para UTC.
+    """
+
+    if "date" not in df.columns:
+        raise ValueError(
+            "Dataset sem coluna obrigatória 'date'."
+        )
+
+    result = df.copy()
+
+    dates = pd.to_datetime(
+        result["date"],
+        errors="raise",
+    )
+
+    if dates.dt.tz is not None:
+        dates = (
+            dates
+            .dt.tz_convert("UTC")
+            .dt.tz_localize(None)
+        )
+
+    result["date"] = dates
+
+    result = (
+        result
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    oot_start, oot_end = (
+        get_local_month_bounds_utc(
+            oot_year,
+            oot_month,
+        )
+    )
+
+    expected_last_hour = (
+        oot_end
+        - pd.Timedelta(hours=1)
+    )
+
+    max_date = result["date"].max()
+
+    if max_date < expected_last_hour:
+        raise ValueError(
+            "Snapshot não contém o mês OOT "
+            "completo. "
+            f"Última hora disponível: {max_date}. "
+            "Última hora necessária: "
+            f"{expected_last_hour}."
+        )
+
+    df_train = (
+        result.loc[
+            result["date"] < oot_start
+        ]
+        .copy()
+        .reset_index(drop=True)
+    )
+
+    df_test = (
+        result.loc[
+            (result["date"] >= oot_start)
+            & (result["date"] < oot_end)
+        ]
+        .copy()
+        .reset_index(drop=True)
+    )
+
+    if df_train.empty:
+        raise ValueError(
+            "Snapshot de treino vazio."
+        )
+
+    if df_test.empty:
+        raise ValueError(
+            "Snapshot OOT vazio."
+        )
+
+    if (
+        df_train["date"].max()
+        >= df_test["date"].min()
+    ):
+        raise ValueError(
+            "Overlap temporal entre treino e OOT."
+        )
+
+    return df_train, df_test
+
+
 @task(
-    name="1. Extrair e Salvar Janela Expansiva",
+    name="Carregar Snapshot Gold",
     retries=2,
     retry_delay_seconds=30,
 )
-def fetch_expanding_window_data(
-) -> tuple[
-    pd.DataFrame,
-    pd.DataFrame,
-    str,
-    str,
-]:
+def load_gold_snapshot_task(
+    snapshot_path: str,
+) -> pd.DataFrame:
     """
-    Extrai os dados aplicando a regra de MLOps de Mês Fechado (Lag M-1),
-    persiste os datasets na camada Gold via utils.py e retorna
-    DataFrames e nomes.
+    Carrega um único snapshot Gold explicitamente.
+
+    Não lê o prefixo inteiro ``gold/`` para evitar
+    concatenação acidental entre snapshots consolidados
+    e artefatos derivados de treino/OOT.
     """
 
-    s3_gold_path = (
-        f"s3://{settings.RUSTFS_BUCKET}/gold/"
+    normalized_path = snapshot_path.strip()
+
+    if not normalized_path:
+        raise ValueError(
+            "snapshot_path não pode ser vazio."
+        )
+
+    if normalized_path.endswith("/"):
+        raise ValueError(
+            "snapshot_path deve apontar para um "
+            "arquivo Parquet específico, não para "
+            "um prefixo/diretório."
+        )
+
+    logger.info(
+        "📖 Carregando snapshot Gold explícito: "
+        f"{normalized_path}"
+    )
+
+    if normalized_path.startswith(
+        "s3://"
+    ):
+        df = pd.read_parquet(
+            normalized_path,
+            storage_options=(
+                settings.storage_options
+            ),
+        )
+    else:
+        df = pd.read_parquet(
+            normalized_path
+        )
+
+    if df.empty:
+        raise ValueError(
+            "Snapshot Gold carregado está vazio."
+        )
+
+    logger.info(
+        "✅ Snapshot carregado | "
+        f"rows={len(df):,} | "
+        f"columns={len(df.columns)}"
+    )
+
+    return df
+
+
+@task(
+    name="Auditar Snapshot Gold",
+)
+def audit_gold_snapshot_task(
+    df: pd.DataFrame,
+    *,
+    dataset_role: str,
+):
+    """
+    Executa o Data Quality Gate do snapshot antes
+    que os dados avancem para otimização/treinamento.
+    """
+
+    report = audit_gold_snapshot(
+        df
     )
 
     logger.info(
-        "📖 Lendo e concatenando parquets "
-        f"da camada Gold: {s3_gold_path}"
+        "✅ Auditoria Gold aprovada | "
+        f"role={dataset_role} | "
+        f"rows={report.rows:,} | "
+        f"range={report.start_date} → "
+        f"{report.end_date} | "
+        "missing_timestamps="
+        f"{report.missing_timestamps} | "
+        f"gaps={report.gap_count} | "
+        f"features={report.feature_count}"
     )
 
-    df = pd.read_parquet(
-        s3_gold_path,
-        storage_options=settings.storage_options,
+    return report
+
+
+@task(
+    name="Dividir Snapshot em Treino e OOT",
+)
+def split_expanding_window_task(
+    df: pd.DataFrame,
+    *,
+    oot_year: int,
+    oot_month: int,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+]:
+    """
+    Wrapper Prefect da função pura de split temporal.
+    """
+
+    df_train, df_test = (
+        split_expanding_window_snapshot(
+            df,
+            oot_year=oot_year,
+            oot_month=oot_month,
+        )
     )
 
-    date_col = (
-        "date"
-        if "date" in df.columns
-        else "data"
-    )
-
-    df[date_col] = pd.to_datetime(
-        df[date_col]
-    )
-
-    df = (
-        df.sort_values(
-            by=date_col
-        )
-        .reset_index(
-            drop=True
+    oot_start, oot_end = (
+        get_local_month_bounds_utc(
+            oot_year,
+            oot_month,
         )
     )
 
-    max_date = df[date_col].max()
-
-    first_day_current_month = max_date.replace(
-        day=1,
-        hour=0,
-        minute=0,
-        second=0,
+    logger.info(
+        "✂️ Split temporal concluído | "
+        f"train_rows={len(df_train):,} | "
+        f"oot_rows={len(df_test):,} | "
+        f"oot_utc=[{oot_start}, {oot_end})"
     )
 
-    current_month_hours = len(
-        df[
-            df[date_col]
-            >= first_day_current_month
-        ]
-    )
+    return df_train, df_test
 
-    if current_month_hours < 28 * 24:
-        logger.warning(
-            "⚠️ Mês recente "
-            f"({first_day_current_month.strftime('%Y-%m')}) "
-            "incompleto. Deslocando janela para o "
-            "último mês fechado."
+
+def build_training_dataset_labels(
+    df_train: pd.DataFrame,
+    *,
+    oot_year: int,
+    oot_month: int,
+) -> tuple[str, str]:
+    """
+    Constrói nomes determinísticos para os artefatos
+    de treino e OOT derivados do snapshot auditado.
+    """
+
+    if df_train.empty:
+        raise ValueError(
+            "Não é possível gerar labels "
+            "a partir de treino vazio."
         )
 
-        oot_start_date = (
-            first_day_current_month
-            - pd.Timedelta(days=1)
-        ).replace(
-            day=1,
-            hour=0,
-            minute=0,
-            second=0,
-        )
-
-        oot_end_date = (
-            first_day_current_month
-        )
-
-    else:
-        oot_start_date = (
-            first_day_current_month
-        )
-
-        oot_end_date = max_date
-
-    df_train = df[
-        df[date_col] < oot_start_date
-    ].copy()
-
-    df_test = df[
-        (
-            df[date_col]
-            >= oot_start_date
-        )
-        & (
-            df[date_col]
-            < oot_end_date
-        )
-    ].copy()
+    train_start = pd.to_datetime(
+        df_train["date"],
+        errors="raise",
+    ).min()
 
     train_start_str = (
-        df_train[date_col]
-        .min()
-        .strftime("%Y_%m")
+        train_start.strftime(
+            "%Y_%m"
+        )
     )
 
     cutoff_str = (
-        oot_start_date
-        .strftime("%Y_%m")
+        f"{oot_year}_"
+        f"{oot_month:02d}"
     )
 
     train_file_label = (
-        f"train_wind_energy_{train_start_str}"
-        f"_expanding_up_to_{cutoff_str}.parquet"
+        f"train_wind_energy_"
+        f"{train_start_str}"
+        f"_expanding_up_to_"
+        f"{cutoff_str}.parquet"
     )
 
     test_file_label = (
-        f"oot_test_wind_energy_"
+        "oot_test_wind_energy_"
         f"{cutoff_str}.parquet"
+    )
+
+    return (
+        train_file_label,
+        test_file_label,
+    )
+
+
+@task(
+    name="Persistir Datasets de Treino e OOT",
+)
+def persist_training_datasets_task(
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+    *,
+    oot_year: int,
+    oot_month: int,
+) -> tuple[str, str]:
+    """
+    Persiste treino e OOT somente depois que o
+    snapshot consolidado foi auditado e dividido
+    pelo contrato temporal oficial.
+    """
+
+    (
+        train_file_label,
+        test_file_label,
+    ) = build_training_dataset_labels(
+        df_train,
+        oot_year=oot_year,
+        oot_month=oot_month,
     )
 
     save_dataset_to_lake_or_local(
@@ -332,13 +604,13 @@ def fetch_expanding_window_data(
     )
 
     logger.info(
-        "✅ Datasets de Treino e Teste "
-        "processados e sincronizados com sucesso!"
+        "✅ Datasets de treino e OOT "
+        "persistidos com sucesso | "
+        f"train={train_file_label} | "
+        f"oot={test_file_label}"
     )
 
     return (
-        df_train,
-        df_test,
         train_file_label,
         test_file_label,
     )
@@ -350,7 +622,7 @@ def fetch_expanding_window_data(
 
 
 @task(
-    name="2. Otimizar Hiperparâmetros (Agnóstico)",
+    name="Otimizar Hiperparâmetros (Agnóstico)",
     retries=1,
 )
 def optimize_hyperparameters(
@@ -398,7 +670,7 @@ def optimize_hyperparameters(
 
 
 @task(
-    name="3. Treinar Modelo (Agnóstico)",
+    name="Treinar Modelo (Agnóstico)",
     log_prints=True,
 )
 def execute_training(
@@ -502,7 +774,7 @@ def get_registered_model_version(
 
 
 @task(
-    name="4. Quality Gate (Champion vs Challenger)",
+    name="Quality Gate (Champion vs Challenger)",
     log_prints=True,
 )
 def evaluate_and_promote(
@@ -815,6 +1087,11 @@ OPTIMIZER_REGISTRY = {
 def continuous_training_pipeline(
     trainer_name: str = "stacking",
     optimizer_name: str = "stacking",
+    snapshot_path: str = (
+        DEFAULT_TRAINING_GOLD_SNAPSHOT_PATH
+    ),
+    oot_year: int = DEFAULT_OOT_YEAR,
+    oot_month: int = DEFAULT_OOT_MONTH,
 ):
     """
     Orquestrador agnóstico de treinamento contínuo.
@@ -827,6 +1104,11 @@ def continuous_training_pipeline(
 
     Quando não há otimização, o trainer recebe ``None`` em
     ``best_params`` e ``optimization_run_id``.
+
+    O dataset de origem é sempre um snapshot Gold explícito.
+    Antes do split, o snapshot passa pelo Data Quality Gate.
+    O mês OOT é interpretado em ``America/Sao_Paulo`` e
+    convertido para os limites UTC usados pelo dataset.
     """
 
     trainer_algorithm = (
@@ -867,12 +1149,46 @@ def continuous_training_pipeline(
     # 1. DADOS
     # ==========================================================================
 
+    df_gold = load_gold_snapshot_task(
+        snapshot_path=snapshot_path,
+    )
+
+    audit_gold_snapshot_task(
+        df_gold,
+        dataset_role="consolidated",
+    )
+
     (
         df_train,
         df_test,
+    ) = split_expanding_window_task(
+        df_gold,
+        oot_year=oot_year,
+        oot_month=oot_month,
+    )
+
+    # Defesa em profundidade: o dataset consolidado já
+    # foi auditado, mas validamos também os artefatos que
+    # serão efetivamente consumidos pelo modelo.
+    audit_gold_snapshot_task(
+        df_train,
+        dataset_role="train",
+    )
+
+    audit_gold_snapshot_task(
+        df_test,
+        dataset_role="oot",
+    )
+
+    (
         train_file,
         test_file,
-    ) = fetch_expanding_window_data()
+    ) = persist_training_datasets_task(
+        df_train,
+        df_test,
+        oot_year=oot_year,
+        oot_month=oot_month,
+    )
 
     # ==========================================================================
     # 2. OTIMIZAÇÃO OPCIONAL

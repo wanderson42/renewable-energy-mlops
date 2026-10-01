@@ -18,6 +18,12 @@ from xgboost import XGBRegressor
 
 from energy_mlops.config import settings
 from energy_mlops.data.feature_utils import select_model_features
+from energy_mlops.models.ensemble_config import (
+    DEFAULT_BASE_ESTIMATORS,
+    PARAM_GROUP_BY_ESTIMATOR,
+    PARAM_PREFIX_BY_ESTIMATOR,
+    validate_enabled_estimators,
+)
 from energy_mlops.models.temporal_stacking import (
     TemporalStackingRegressor,
 )
@@ -54,6 +60,53 @@ base models são refitados em TODO o X_train
          modelo final
 '''
 
+
+ESTIMATOR_NAME_TOKENS = {
+    "lgbm": "lgb",
+    "xgboost": "xgb",
+    "rf": "rf",
+}
+
+
+def build_architecture_names(
+    enabled_estimators: tuple[str, ...],
+) -> tuple[str, str]:
+    """
+    Gera nomes determinísticos da Run e do
+    Registered Model a partir da arquitetura.
+    """
+
+    unknown_estimators = (
+        set(enabled_estimators)
+        - set(ESTIMATOR_NAME_TOKENS)
+    )
+
+    if unknown_estimators:
+        raise ValueError(
+            "Estimators sem nomenclatura definida: "
+            f"{sorted(unknown_estimators)}"
+        )
+
+    architecture_slug = "_".join(
+        ESTIMATOR_NAME_TOKENS[name]
+        for name in enabled_estimators
+    )
+
+    run_name = (
+        f"Stacking_"
+        f"{architecture_slug.upper()}"
+        f"_Bahia"
+    )
+
+    model_name = (
+        f"ensemble_"
+        f"{architecture_slug}"
+        f"_bahia"
+    )
+
+    return run_name, model_name
+
+
 def prepare_features(
     df_train: pd.DataFrame,
     df_test: pd.DataFrame,
@@ -82,6 +135,7 @@ def train_stacking_regressor(
     test_file: str,
     best_params: dict | None = None,
     optimization_run_id: str | None = None,
+    enabled_estimators: tuple[str, ...] = DEFAULT_BASE_ESTIMATORS,
 ) -> tuple[str, float]:
     """
     Treina o modelo, registra todos os metadados (SHAP, trusted_types, métricas ricas) 
@@ -100,6 +154,14 @@ def train_stacking_regressor(
             "'optimization_run_id' para rastreabilidade."
         )
 
+    enabled_estimators = validate_enabled_estimators(enabled_estimators)
+
+    run_name, model_name = (
+        build_architecture_names(
+            enabled_estimators
+        )
+    )
+
     X_train, X_test, y_train_fc, y_test_fc, y_train_mw, y_test_mw, cap_train, cap_test = (
         prepare_features(df_train, df_test)
     )
@@ -112,7 +174,50 @@ def train_stacking_regressor(
         client.restore_experiment(experiment.experiment_id)
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name="Stacking_LGB_XGB_RF_Bahia") as run:
+    with mlflow.start_run(run_name=run_name) as run:
+
+        architecture_str = ",".join(
+            enabled_estimators
+        )
+
+        # ------------------------------------------------------
+        # Arquitetura
+        # ------------------------------------------------------
+
+        mlflow.log_param(
+            "base_estimators",
+            architecture_str,
+        )
+
+        mlflow.log_param(
+            "n_base_estimators",
+            len(enabled_estimators),
+        )
+
+        mlflow.set_tag(
+            "ensemble_architecture",
+            architecture_str,
+        )
+
+        # Temporário — benchmark de simplificação v0.2.0
+        mlflow.set_tag(
+            "experiment_family",
+            "ensemble_simplification_v0.2.0",
+        )
+
+        mlflow.set_tag(
+            "architecture_run_name",
+            run_name,
+        )
+
+        mlflow.set_tag(
+            "registered_model_name",
+            model_name,
+        )
+
+        # ------------------------------------------------------
+        # Linhagem da otimização
+        # ------------------------------------------------------
 
         mlflow.set_tag(
             "optimization_run_id",
@@ -148,37 +253,96 @@ def train_stacking_regressor(
             "optimization_params_used.json",
         )
 
-        # 1. Recebe os parâmetros diretamente da execução de otimização
-        lgb_params = best_params.get("lgb_params", {})
-        xgb_params = best_params.get("xgb_params", {})
-        rf_params = best_params.get("rf_params", {})
+        # ==========================================================
+        # 1. Parâmetros produzidos pela Optimization Run
+        # ==========================================================
 
-
-        required_param_groups = {
-            "lgb_params": lgb_params,
-            "xgb_params": xgb_params,
-            "rf_params": rf_params,
+        params_by_estimator = {
+            "lgbm": best_params.get(
+                "lgb_params",
+                {},
+            ),
+            "xgboost": best_params.get(
+                "xgb_params",
+                {},
+            ),
+            "rf": best_params.get(
+                "rf_params",
+                {},
+            ),
         }
 
+        # Exige parâmetros apenas dos estimadores habilitados.
         missing_groups = [
-            name
-            for name, params in required_param_groups.items()
-            if not params
+            PARAM_GROUP_BY_ESTIMATOR[name]
+            for name in enabled_estimators
+            if not params_by_estimator[name]
         ]
 
         if missing_groups:
             raise ValueError(
-                f"Parâmetros de otimização ausentes: {missing_groups}. "
+                "Parâmetros de otimização ausentes: "
+                f"{missing_groups}. "
                 f"Optimization Run: {optimization_run_id}"
             )
 
-        mlflow.log_params({f"lgb_{k}": v for k, v in lgb_params.items()})
-        mlflow.log_params({f"xgb_{k}": v for k, v in xgb_params.items()})
-        mlflow.log_params({f"rf_{k}": v for k, v in rf_params.items()})
 
-        lgb_model = lgb.LGBMRegressor(**lgb_params)
-        xgb_model = XGBRegressor(**xgb_params)
-        rf_model = RandomForestRegressor(**rf_params)
+        # ==========================================================
+        # 2. Logging dos hiperparâmetros utilizados
+        # ==========================================================
+
+        for name in enabled_estimators:
+            prefix = PARAM_PREFIX_BY_ESTIMATOR[name]
+
+            mlflow.log_params(
+                {
+                    f"{prefix}_{key}": value
+                    for key, value
+                    in params_by_estimator[name].items()
+                }
+            )
+
+
+        # ==========================================================
+        # 3. Construção dinâmica dos modelos base
+        # ==========================================================
+
+        estimators = []
+
+        for name in enabled_estimators:
+            if name == "lgbm":
+                estimator = lgb.LGBMRegressor(
+                    **params_by_estimator[name]
+                )
+
+            elif name == "xgboost":
+                estimator = XGBRegressor(
+                    **params_by_estimator[name]
+                )
+
+            elif name == "rf":
+                estimator = RandomForestRegressor(
+                    **params_by_estimator[name]
+                )
+
+            else:
+                # Este caso já deve ter sido bloqueado por
+                # validate_enabled_estimators().
+                raise RuntimeError(
+                    f"Estimador inesperado após validação: {name}"
+                )
+
+            estimators.append(
+                (
+                    name,
+                    estimator,
+                )
+            )
+
+
+        # ==========================================================
+        # 4. Meta-learner + validação temporal
+        # ==========================================================
 
         meta_learner = LinearRegression(
             positive=True,
@@ -189,24 +353,63 @@ def train_stacking_regressor(
             n_splits=5,
         )
 
+
+        # ==========================================================
+        # 5. Temporal Stacking
+        # ==========================================================
+
         ensemble = TemporalStackingRegressor(
-            estimators=[
-                ("lgbm", lgb_model),
-                ("xgboost", xgb_model),
-                ("rf", rf_model),
-            ],
+            estimators=estimators,
             final_estimator=meta_learner,
             cv=cv_strategy,
         )
 
-        print(f"🚀 A treinar Stacking Ensemble ({X_train.shape[0]} amostras, {num_features_challenger} features)...")
-        ensemble.fit(X_train, y_train_fc)
+        print(
+            "🚀 A treinar Stacking Ensemble "
+            f"({X_train.shape[0]} amostras, "
+            f"{num_features_challenger} features, "
+            f"estimators={list(enabled_estimators)})..."
+        )
 
-        meta_coefs = ensemble.final_estimator_.coef_
-        print(f"🧠 Pesos OOF aprendidos pelo Meta-Learner (LGB, XGB, RF): {meta_coefs}")
+        ensemble.fit(
+            X_train,
+            y_train_fc,
+        )
+
+
+        # ==========================================================
+        # 6. Pesos OOF aprendidos pelo meta-learner
+        # ==========================================================
+
+        estimator_names = [
+            name
+            for name, _ in estimators
+        ]
+
+        meta_coefs = (
+            ensemble.final_estimator_.coef_
+        )
+
+        meta_coef_by_estimator = dict(
+            zip(
+                estimator_names,
+                meta_coefs,
+                strict=True,
+            )
+        )
+
+        print(
+            "🧠 Pesos OOF aprendidos pelo Meta-Learner "
+            f"({', '.join(estimator_names)}): "
+            f"{meta_coefs}"
+        )
 
         mlflow.log_params(
-            {f"meta_coef_{name}": float(coef) for name, coef in zip(["lgbm", "xgboost", "rf"], meta_coefs)}
+            {
+                f"meta_coef_{name}": float(coef)
+                for name, coef
+                in meta_coef_by_estimator.items()
+            }
         )
 
         mlflow.log_param(
@@ -218,6 +421,7 @@ def train_stacking_regressor(
             "stacking_cv_n_splits",
             cv_strategy.n_splits,
         )
+
 
         # Previsões
         train_preds_fc = ensemble.predict(X_train)
@@ -255,10 +459,14 @@ def train_stacking_regressor(
             for name, est in ensemble.named_estimators_.items()
         ]
 
-        meta_weights = {}
-        if hasattr(ensemble.final_estimator_, "coef_"):
-            for (name, _), coef in zip(ensemble.named_estimators_.items(), ensemble.final_estimator_.coef_):
-                meta_weights[name] = round(float(coef), 4)
+        meta_weights = {
+            name: round(
+                float(coef),
+                4,
+            )
+            for name, coef
+            in meta_coef_by_estimator.items()
+        }
 
         model_summary = {
             "model_name": "ensemble_lgb_xgb_rf_bahia",
@@ -278,9 +486,22 @@ def train_stacking_regressor(
 
         mlflow.log_dict(model_summary, "model_summary.json")
         
-        arch_str = f"{type(ensemble).__name__} ({', '.join(meta_weights.keys())}) -> {type(ensemble.final_estimator_).__name__}"
-        mlflow.set_tag("architecture_str", arch_str)
-        mlflow.set_tag("meta_weights_json", json.dumps(meta_weights))
+        architecture_summary = (
+            f"{type(ensemble).__name__} "
+            f"({', '.join(meta_weights.keys())}) "
+            f"-> "
+            f"{type(ensemble.final_estimator_).__name__}"
+        )
+
+        mlflow.set_tag(
+            "architecture_str",
+            architecture_summary,
+        )
+
+        mlflow.set_tag(
+            "meta_weights_json",
+            json.dumps(meta_weights),
+        )
 
         # ==============================================================================
         # 🔍 EXPLICABILIDADE SHAP (Restaurada)
@@ -345,7 +566,7 @@ def train_stacking_regressor(
         ]
 
         signature = infer_signature(X_test, test_preds_fc)
-        model_name = "ensemble_lgb_xgb_rf_bahia"
+
 
         mlflow.sklearn.log_model(
             sk_model=ensemble,

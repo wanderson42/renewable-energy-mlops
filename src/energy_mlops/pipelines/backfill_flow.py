@@ -6,16 +6,85 @@ from datetime import UTC, datetime
 import pandas as pd
 from prefect import flow
 
+from energy_mlops.data.reference_data import load_bahia_wind_capacity_checkpoints
+
 # Importamos as tasks já definidas no pipeline de ingestão para reutilizá-las
 from energy_mlops.pipelines.data_ingestion_flow import (
+    audit_gold_snapshot_task,
     extract_energy_task,
     extract_weather_task,
     merge_datasets_task,
     transform_features_task,
+    validate_energy_month_boundary,
 )
 
 # Importamos as configurações do nosso Data Lake
 from energy_mlops.pipelines.utils import save_dataset_to_lake_or_local
+
+
+def filter_capacity_covered_period(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Remove observações anteriores ao primeiro checkpoint
+    de capacidade causalmente disponível.
+
+    O limite é derivado da referência INFOVENTO, evitando
+    datas hardcoded no pipeline.
+    """
+
+    checkpoints = (
+        load_bahia_wind_capacity_checkpoints()
+    )
+
+    first_available = (
+        checkpoints["available_from"]
+        .min()
+    )
+
+    dates = pd.to_datetime(
+        df["date"],
+        utc=True,
+    )
+
+    cutoff = pd.Timestamp(
+        first_available
+    )
+
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    else:
+        cutoff = cutoff.tz_convert("UTC")
+
+    keep_mask = dates >= cutoff
+
+    removed = int(
+        (~keep_mask).sum()
+    )
+
+    if removed:
+        print(
+            "Removendo "
+            f"{removed:,} registros anteriores "
+            "ao primeiro checkpoint causal "
+            f"INFOVENTO ({cutoff})."
+        )
+
+    result = (
+        df.loc[keep_mask]
+        .copy()
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    if result.empty:
+        raise ValueError(
+            "Nenhuma observação possui cobertura "
+            "causal de capacidade INFOVENTO."
+        )
+
+    return result
+
 
 
 @flow(name="Backfill_Historico", log_prints=True)
@@ -51,40 +120,54 @@ def historical_backfill_flow(
 
             print(f"Processando: {year}-{month:02d}...")
 
-            try:
-                df_weather = extract_weather_task(start_date=start_date, end_date=end_date)
-                df_energy = extract_energy_task(year=year, month=month)
+            df_weather = extract_weather_task(
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-                if df_weather is not None and df_energy is not None:
-                    df_merged = merge_datasets_task(df_weather=df_weather, df_energy=df_energy)
-                    monthly_dfs.append(df_merged)
-                else:
-                    print(f"Dados ausentes para {year}-{month:02d}. Pulando...")
+            df_energy = extract_energy_task(
+                year=year,
+                month=month,
+            )
 
-            except Exception as e:  # noqa: BLE001
-                print(f"Erro ao processar {year}-{month:02d}: {e}")
-                continue
+            validate_energy_month_boundary(
+                df_energy,
+                year=year,
+                month=month,
+            )
+
+            df_merged = merge_datasets_task(
+                df_weather=df_weather,
+                df_energy=df_energy,
+            )
+
+            if df_merged.empty:
+                raise ValueError(
+                    "Merge sem observações para "
+                    f"{year}-{month:02d}."
+                )
+
+            monthly_dfs.append(
+                df_merged
+            )
 
     if not monthly_dfs:
         raise RuntimeError("Nenhum dado foi extraído com sucesso durante o backfill.")
 
     print("Consolidando todos os meses em um único DataFrame...")
     df_full = pd.concat(monthly_dfs, ignore_index=True)
-    df_full = df_full.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-    # Garante que a coluna 'date' seja timezone-aware em UTC
-    df_full["date"] = pd.to_datetime(df_full["date"], utc=True)
+    df_full["date"] = pd.to_datetime(df_full["date"] ,utc=True)
 
-    # Parâmetro de corte temporal: não permite registros fora do intervalo definido
-    # evita que registros das ultimas 3 horas do ano sejam negligenciados (UTC-3 Brasília) 
-    cutoff_limit = pd.Timestamp(f"{end_year + 1}-01-01 03:00:00", tz="utc")
-    df_full = df_full[df_full["date"] < cutoff_limit]
+    df_full = (df_full.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True))
 
-    # Remove duplicatas mantendo ordenação
-    df_full = df_full.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+    df_full = (filter_capacity_covered_period(df_full))
 
-    print("Aplicando Engenharia de Features (Física e Sazonalidade)...")
+    print("Aplicando Engenharia de Features, Física e Sazonalidade)...")
+
     df_full = transform_features_task(df_full)
+
+    audit_gold_snapshot_task(df_full)
 
     print(f"Backfill concluído! Total de registros: {len(df_full):,}")
 

@@ -4,7 +4,7 @@
 [![CI](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml/badge.svg)](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Poetry](https://img.shields.io/badge/Poetry-2.x-60A5FA?logo=poetry&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-75%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-122%20passed-brightgreen)
 [![License](https://img.shields.io/github/license/wanderson42/renewable-energy-mlops)](LICENSE)
 
 Sistema MLOps end-to-end para **previsão horária Day-Ahead de geração eólica na Bahia**, cobrindo ingestão de dados, contratos de features, validação temporal, otimização de hiperparâmetros, experiment tracking, Model Registry, explicabilidade, monitoramento de drift, Continuous Training, model serving e operação local em Kubernetes.
@@ -19,6 +19,7 @@ O modelo aprende o **fator de capacidade (`target_fc`)** e reconstrói a previs�
 flowchart TD
     OM[Open-Meteo] --> ING[Prefect Data Pipelines]
     ONS[ONS] --> ING
+    ABE[ABEEólica / INFOVENTO] --> ING
     ING --> VAL[Pandera + Data Contracts]
     VAL --> FE[Feature Engineering]
     FE --> GOLD[(RustFS / Gold Data Lake)]
@@ -54,7 +55,7 @@ O projeto separa explicitamente:
 
 Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nova imagem da API não implica retreinar o modelo.
 
-## Snapshot validado — 2026-09-30
+## Estado atual — 2026-10-01
 
 | Item | Estado |
 |---|---|
@@ -68,10 +69,25 @@ Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nov
 | Último Challenger | **v12 — rejeitado pelo Quality Gate** |
 | Data Drift observado | **7/9 features (77.8%)** |
 | Threshold de Data Drift | **50%** |
-| Testes automatizados | **75 passed / 0 failed** |
+| Testes automatizados | **122 passed / 0 failed** |
 | Warnings conhecidos | **2 — Evidently/NumPy, não bloqueantes** |
 
 O Challenger v12 apresentou `837.85 MW` de MAE OOT, `7.11%` de nMAE e `R² = 0.8438`. Como não melhorou o MAE e não reduziu o número de features, o alias `@champion` permaneceu na v10.
+
+### Experimento de simplificação — v0.2.0
+
+O experimento v0.2.0 avaliou três arquiteturas sobre **o mesmo snapshot temporal congelado**, com 21.425 observações de treino, 720 observações OOT de setembro/2026, 9 features, 20 trials Optuna, 3 splits externos e 5 splits internos do Stacking.
+
+| Arquitetura | OOT MAE (MW) | OOT nMAE (%) | OOT R² |
+|---|---:|---:|---:|
+| LGBM + XGB + RF | **774.90** | **6.57** | **0.8666** |
+| LGBM + RF | 788.35 | 6.69 | 0.8633 |
+| LGBM + XGB | 785.31 | 6.66 | 0.8641 |
+
+A hipótese original de remover o XGBoost não foi sustentada no novo snapshot. `LGBM + XGB` foi o melhor candidato reduzido, mas o ensemble completo manteve os melhores valores pontuais no OOT.
+
+O benchmark é tratado como **evidência experimental** e não promoveu automaticamente nenhum modelo. O Champion operacional permanece na v10, pois suas métricas históricas pertencem a outro período OOT e não são comparadas diretamente com o benchmark v0.2.0 para fins de promoção.
+
 
 ## Dashboard operacional
 
@@ -87,6 +103,19 @@ A interface consome previsão meteorológica real da Open-Meteo para **Morro do 
 
 O relatório do Evidently monitora apenas as features pertencentes ao contrato do modelo. Data Drift e Performance Drift são avaliados separadamente; qualquer um deles pode disparar Continuous Training, mas **drift nunca promove um modelo diretamente**.
 
+## Proveniência dos dados
+
+O contrato atual separa claramente as fontes:
+
+- **meteorologia:** Open-Meteo;
+- **geração eólica horária:** ONS;
+- **capacidade instalada canônica:** checkpoints históricos da ABEEólica / INFOVENTO;
+- **ANEEL:** fonte diagnóstica para reconciliação de eventos, não usada para reconstruir `capacidade_mw`.
+
+A capacidade é aplicada causalmente: cada timestamp utiliza somente o checkpoint mais recente já disponível. Não são usados interpolação linear nem backward fill. O histórico canônico de capacidade utilizado na v0.2.0 começa em **2024-03-21**.
+
+Na extração do ONS, horas com registros incompletos de geração são descartadas antes da agregação estadual; valores ausentes de usinas não são transformados em `0 MW`.
+
 ## Arquitetura de modelagem
 
 O modelo operacional usa `TemporalStackingRegressor` com OOF causal:
@@ -99,6 +128,8 @@ RandomForest┘                    positive=True
 ```
 
 A validação usa `TimeSeriesSplit`. O bloco inicial que não possui previsão OOF é excluído do treinamento do meta-learner; depois, os modelos base são refitados sobre todo o conjunto de treino disponível.
+
+Na v0.2.0, os estimadores base passaram a ser configuráveis para suportar ablações controladas (`LGBM + XGB + RF`, `LGBM + RF` e `LGBM + XGB`) sem duplicar trainers. Essa flexibilidade serve ao experimento; a arquitetura operacional continua sendo o stack completo enquanto não houver uma decisão explícita de lifecycle.
 
 ### Contrato canônico de features
 
@@ -116,7 +147,7 @@ month_cos
 wind_speed_roll_mean_3h
 ```
 
-A rolling de vento de 3 horas é construída de forma causal para evitar leakage temporal.
+A rolling de vento de 3 horas é construída de forma causal e **gap-safe**, usando uma janela cronológica de três horas em vez das três linhas anteriores. Isso evita leakage temporal e impede que a feature atravesse artificialmente grandes lacunas do dataset.
 
 ### Métricas canônicas
 
@@ -151,12 +182,14 @@ Cada `ModelTrainer` decide se otimização é obrigatória. O Stacking atual exi
 
 A promoção de Challenger para Champion só ocorre após o **Quality Gate**. Na execução E2E validada, o Monitoring detectou drift, o CT treinou a v12 e o gate decidiu manter a v10. Não promover também é um resultado esperado de governança.
 
+A regra atual de parcimônia considera **redução do número de features**, não redução do número de estimadores base. Por isso, ela não foi usada para decidir automaticamente entre as arquiteturas do experimento v0.2.0, que compartilham o mesmo contrato de 9 features.
+
 ## Stack técnico
 
 | Camada | Tecnologias |
 |---|---|
 | Linguagem / ambiente | Python 3.14, Poetry 2.x |
-| Dados | pandas, PyArrow, Open-Meteo, ONS |
+| Dados | pandas, PyArrow, Open-Meteo, ONS, ABEEólica / INFOVENTO |
 | Contratos | Pandera, Pydantic |
 | Modelagem | scikit-learn, LightGBM, XGBoost, Random Forest |
 | Ensemble temporal | `TemporalStackingRegressor`, `TimeSeriesSplit` |
@@ -191,6 +224,8 @@ renewable-energy-mlops/
 │       ├── postgres.yaml
 │       └── rustfs.yaml
 ├── notebooks/
+│   ├── experiments/
+│   │   └── ensemble_simplification_v0_2_0.ipynb
 │   ├── extract_test.png
 │   ├── renewable-energy-mlops.ipynb
 │   ├── streamlit_day_ahead.png
@@ -329,7 +364,7 @@ poetry run tox -r -e py314
 Resultado validado:
 
 ```text
-75 passed
+122 passed
 0 failed
 2 warnings
 py314: OK
@@ -366,6 +401,7 @@ Portanto, o projeto possui **CI + entrega de imagem automatizada**, mas não se 
 - `helm/values_secrets.yaml` permanece local e ignorado pelo Git.
 - Datasets reais não são versionados; o Data Lake operacional reside no RustFS.
 - MLflow registra datasets, parâmetros, métricas, artifacts e lineage entre Optimization Run e Training Run.
+- Experimentos controlados usam um snapshot Gold explícito e TRAIN/OOT derivados com corte temporal documentado, evitando leituras ambíguas por prefixo.
 - `make status` é diagnóstico; `make validate` funciona como gate operacional.
 - Unit tests isolam dependências externas quando a infraestrutura não faz parte do comportamento sob teste.
 
@@ -378,6 +414,7 @@ O README funciona como landing page. A análise detalhada do projeto, decisões 
 Documentos adicionais:
 
 - [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) — objetivo, contrato, métricas, limitações e governança do modelo.
+- [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble na v0.2.0.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
 
 ## Packaging scope
@@ -396,11 +433,11 @@ Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MA
 
 ## Roadmap
 
-- comparar janelas rolling de **12 / 24 / 36 meses** com a janela expansiva sobre o mesmo holdout futuro;
-- comparar `LightGBM + RandomForest` com o stack completo, motivado pelo peso zero do XGBoost na última execução;
-- acompanhar drift e performance longitudinalmente ao longo de novos meses;
+- comparar a janela **expansiva** com janelas rolling de **12 e 24 meses**, usando o mesmo holdout futuro;
+- reavaliar janelas mais longas somente quando houver histórico canônico suficiente de `capacidade_mw`;
+- acompanhar longitudinalmente a estabilidade de `LGBM + XGB + RF` e `LGBM + XGB` em novos meses OOT;
 - evoluir o Registered Model para uma identidade orientada ao produto, independente da arquitetura;
-- criar blueprint IaC com Terraform para AWS, mantendo KinD + Helm como ambiente local reproduzível.
+- criar blueprint IaC com Terraform para AWS, mantendo KinD + Helm como ambiente local reproduzível e a fase Cloud/IaC separada da evolução do modelo.
 
 ## Licença
 

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import energy_mlops.models.optimize_stacking_ensemble as optimization_module
 from energy_mlops.models.optimize_stacking_ensemble import (
     objective,
     run_optimization,
@@ -153,7 +154,7 @@ def test_run_optimization_returns_optimization_result():
     # --------------------------------------------------
     mock_create_study.assert_called_once_with(
         direction="minimize",
-        study_name="Ensemble_Optimization",
+        study_name="Ensemble_Optimization_LGB_XGB_RF",
     )
 
     fake_study.optimize.assert_called_once()
@@ -210,6 +211,15 @@ def test_run_optimization_returns_optimization_result():
     assert (
         objective_call.kwargs["stacking_n_splits"]
         == 5
+    )
+
+    assert (
+        objective_call.kwargs["enabled_estimators"]
+        == (
+            "lgbm",
+            "xgboost",
+            "rf",
+        )
     )
 
     # --------------------------------------------------
@@ -278,6 +288,11 @@ def test_run_optimization_returns_optimization_result():
             "learning_rate": 0.05,
             "num_leaves": 50,
             "max_depth": 6,
+            "objective": "regression",
+            "metric": "mae",
+            "random_state": 42,
+            "verbosity": -1,
+            "n_jobs": -1,
         },
         "xgb_params": {
             "n_estimators": 300,
@@ -285,11 +300,16 @@ def test_run_optimization_returns_optimization_result():
             "max_depth": 5,
             "subsample": 0.8,
             "colsample_bytree": 0.9,
+            "objective": "reg:absoluteerror",
+            "random_state": 42,
+            "n_jobs": -1,
         },
         "rf_params": {
             "n_estimators": 150,
             "max_depth": 10,
             "min_samples_split": 5,
+            "random_state": 42,
+            "n_jobs": -1,
         },
     }
 
@@ -603,3 +623,103 @@ def test_objective_uses_temporal_stacking_without_future_leakage():
 
     fake_rf.fit.assert_not_called()
     fake_rf.predict.assert_not_called()
+
+
+def test_suggest_estimator_params_excludes_xgboost_for_lgbm_rf():
+    trial = MagicMock()
+
+    trial.suggest_int.side_effect = [
+        200,  # lgb_n_estimators
+        50,   # lgb_num_leaves
+        6,    # lgb_max_depth
+        150,  # rf_n_estimators
+        10,   # rf_max_depth
+        5,    # rf_min_samples_split
+    ]
+
+    trial.suggest_float.side_effect = [
+        0.05,  # lgb_learning_rate
+    ]
+
+    params = optimization_module._suggest_estimator_params(
+        trial,
+        enabled_estimators=(
+            "lgbm",
+            "rf",
+        ),
+    )
+
+    assert set(params) == {
+        "lgbm",
+        "rf",
+    }
+
+    suggested_parameter_names = {
+        call.args[0]
+        for call in (
+            trial.suggest_int.call_args_list
+            + trial.suggest_float.call_args_list
+        )
+    }
+
+    assert {
+        "lgb_n_estimators",
+        "lgb_learning_rate",
+        "lgb_num_leaves",
+        "lgb_max_depth",
+        "rf_n_estimators",
+        "rf_max_depth",
+        "rf_min_samples_split",
+    } <= suggested_parameter_names
+
+    assert not any(
+        name.startswith("xgb_")
+        for name in suggested_parameter_names
+    )
+
+
+def test_reconstruct_best_params_for_lgbm_rf_excludes_xgboost():
+    best_params_raw = {
+        "lgb_n_estimators": 200,
+        "lgb_learning_rate": 0.05,
+        "lgb_num_leaves": 50,
+        "lgb_max_depth": 6,
+        "rf_n_estimators": 150,
+        "rf_max_depth": 10,
+        "rf_min_samples_split": 5,
+    }
+
+    result = optimization_module._reconstruct_best_params(
+        best_params_raw,
+        enabled_estimators=(
+            "lgbm",
+            "rf",
+        ),
+    )
+
+    assert set(result) == {
+        "lgb_params",
+        "rf_params",
+    }
+
+    assert "xgb_params" not in result
+
+    assert result["lgb_params"] == {
+        "n_estimators": 200,
+        "learning_rate": 0.05,
+        "num_leaves": 50,
+        "max_depth": 6,
+        "objective": "regression",
+        "metric": "mae",
+        "random_state": 42,
+        "verbosity": -1,
+        "n_jobs": -1,
+    }
+
+    assert result["rf_params"] == {
+        "n_estimators": 150,
+        "max_depth": 10,
+        "min_samples_split": 5,
+        "random_state": 42,
+        "n_jobs": -1,
+    }
