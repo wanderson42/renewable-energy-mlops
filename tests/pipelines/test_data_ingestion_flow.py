@@ -1,9 +1,22 @@
-import unittest.mock
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 import energy_mlops.pipelines.data_ingestion_flow as ingestion_module
+
+TEST_YEAR = 2026
+TEST_MONTH = 9
+
+COMPLETE_MONTH_DATES = [
+    "2026-09-01 03:00:00",
+    "2026-10-01 02:00:00",
+]
+
+EXPECTED_GOLD_PATH = (
+    "s3://energy-lake/"
+    "gold/test.parquet"
+)
 
 
 def make_energy_dataframe(
@@ -12,10 +25,9 @@ def make_energy_dataframe(
     return pd.DataFrame(
         {
             "date": pd.to_datetime(dates),
-            "wind_generation_mw": [
-                1000.0
-                for _ in dates
-            ],
+            "wind_generation_mw": (
+                [1000.0] * len(dates)
+            ),
         }
     )
 
@@ -26,18 +38,15 @@ def make_weather_dataframe(
     return pd.DataFrame(
         {
             "date": pd.to_datetime(dates),
-            "temperature_2m": [
-                25.0
-                for _ in dates
-            ],
-            "wind_speed_100m": [
-                10.0
-                for _ in dates
-            ],
-            "wind_direction_100m": [
-                180.0
-                for _ in dates
-            ],
+            "temperature_2m": (
+                [25.0] * len(dates)
+            ),
+            "wind_speed_100m": (
+                [10.0] * len(dates)
+            ),
+            "wind_direction_100m": (
+                [180.0] * len(dates)
+            ),
         }
     )
 
@@ -49,16 +58,13 @@ def test_validate_energy_month_boundary_accepts_complete_month():
     """
 
     df_energy = make_energy_dataframe(
-        [
-            "2026-09-01 03:00:00",
-            "2026-10-01 02:00:00",
-        ]
+        COMPLETE_MONTH_DATES
     )
 
     ingestion_module.validate_energy_month_boundary(
         df_energy,
-        year=2026,
-        month=9,
+        year=TEST_YEAR,
+        month=TEST_MONTH,
     )
 
 
@@ -82,14 +88,14 @@ def test_validate_energy_month_boundary_rejects_truncated_month():
     ):
         ingestion_module.validate_energy_month_boundary(
             df_energy,
-            year=2026,
-            month=9,
+            year=TEST_YEAR,
+            month=TEST_MONTH,
         )
 
 
 def test_validate_energy_month_boundary_allows_internal_gaps():
     """
-    A validação verifica fechamento mensal.
+    A validação verifica o fechamento mensal.
 
     Lacunas internas podem existir porque horas
     incompletas são removidas pelo extractor ONS.
@@ -126,28 +132,27 @@ def test_validate_energy_month_boundary_rejects_empty_dataframe():
     ):
         ingestion_module.validate_energy_month_boundary(
             df_energy,
-            year=2026,
-            month=9,
+            year=TEST_YEAR,
+            month=TEST_MONTH,
         )
 
 
-def test_data_ingestion_flow_validates_energy_boundary():
+def test_data_ingestion_flow_validates_and_audits_before_persisting():
     """
-    O flow mensal deve validar que o ONS alcançou
-    o fechamento do mês antes de publicar o Gold.
-    """
+    O flow mensal deve:
 
-    dates = [
-        "2026-09-01 03:00:00",
-        "2026-10-01 02:00:00",
-    ]
+    1. validar o fechamento mensal do ONS;
+    2. realizar merge e feature engineering;
+    3. auditar o Gold transformado;
+    4. persistir exatamente o DataFrame auditado.
+    """
 
     df_energy = make_energy_dataframe(
-        dates
+        COMPLETE_MONTH_DATES
     )
 
     df_weather = make_weather_dataframe(
-        dates
+        COMPLETE_MONTH_DATES
     )
 
     df_merged = pd.merge(
@@ -157,85 +162,90 @@ def test_data_ingestion_flow_validates_energy_boundary():
         how="inner",
     )
 
-    df_transformed = (
-        df_merged.copy()
-    )
+    df_transformed = df_merged.copy()
 
     with (
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "extract_weather_task",
             return_value=df_weather,
         ),
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "extract_energy_task",
             return_value=df_energy,
         ),
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "validate_energy_month_boundary",
         ) as mock_validate,
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "merge_datasets_task",
             return_value=df_merged,
         ),
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "transform_features_task",
             return_value=df_transformed,
         ),
-        unittest.mock.patch.object(
+        patch.object(
+            ingestion_module,
+            "audit_gold_snapshot_task",
+        ) as mock_audit,
+        patch.object(
             ingestion_module,
             "save_dataset_to_lake_or_local",
-            return_value=(
-                "s3://energy-lake/"
-                "gold/test.parquet"
-            ),
-        ),
+            return_value=EXPECTED_GOLD_PATH,
+        ) as mock_save,
     ):
         result = (
             ingestion_module
             .data_ingestion_flow
             .fn(
-                year=2026,
-                month=9,
+                year=TEST_YEAR,
+                month=TEST_MONTH,
             )
         )
 
-    mock_validate.assert_called_once()
-
-    args, kwargs = (
-        mock_validate.call_args
+    mock_validate.assert_called_once_with(
+        df_energy=df_energy,
+        year=TEST_YEAR,
+        month=TEST_MONTH,
     )
 
-    if kwargs:
-        assert kwargs["year"] == 2026
-        assert kwargs["month"] == 9
-        assert (
-            kwargs["df_energy"]
-            is df_energy
-        )
-    else:
-        assert args[0] is df_energy
-        assert args[1] == 2026
-        assert args[2] == 9
+    mock_audit.assert_called_once()
 
-    assert result == (
-        "s3://energy-lake/"
-        "gold/test.parquet"
+    assert (
+        mock_audit.call_args.args[0]
+        is df_transformed
     )
+
+    mock_save.assert_called_once()
+
+    save_args, save_kwargs = (
+        mock_save.call_args
+    )
+
+    persisted_df = (
+        save_kwargs["df"]
+        if "df" in save_kwargs
+        else save_args[0]
+    )
+
+    assert persisted_df is df_transformed
+
+    assert result == EXPECTED_GOLD_PATH
 
 
 def test_extract_energy_task_propagates_extractor_failure():
     """
-    O task não deve transformar uma falha da fonte
-    em None.
+    A task não deve transformar uma falha da fonte
+    ONS em None ou continuar silenciosamente.
     """
 
     with (
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "fetch_ons_wind_generation",
             side_effect=RuntimeError(
@@ -248,19 +258,19 @@ def test_extract_energy_task_propagates_extractor_failure():
         ),
     ):
         ingestion_module.extract_energy_task.fn(
-            year=2026,
-            month=9,
+            year=TEST_YEAR,
+            month=TEST_MONTH,
         )
 
 
 def test_extract_weather_task_propagates_extractor_failure():
     """
-    O task não deve transformar uma falha da fonte
-    em None.
+    A task não deve transformar uma falha
+    da Open-Meteo em None.
     """
 
     with (
-        unittest.mock.patch.object(
+        patch.object(
             ingestion_module,
             "fetch_open_meteo_wind_data",
             side_effect=RuntimeError(

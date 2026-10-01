@@ -10,6 +10,7 @@ from energy_mlops.data.reference_data import load_bahia_wind_capacity_checkpoint
 
 # Importamos as tasks já definidas no pipeline de ingestão para reutilizá-las
 from energy_mlops.pipelines.data_ingestion_flow import (
+    audit_gold_snapshot_task,
     extract_energy_task,
     extract_weather_task,
     merge_datasets_task,
@@ -165,6 +166,8 @@ def historical_backfill_flow(
     print("Aplicando Engenharia de Features, Física e Sazonalidade)...")
 
     df_full = transform_features_task(df_full)
+
+    audit_gold_snapshot_task(df_full)
 
     print(f"Backfill concluído! Total de registros: {len(df_full):,}")
 

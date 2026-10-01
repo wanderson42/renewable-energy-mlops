@@ -5,10 +5,7 @@ import pandas as pd
 import pytest
 
 from energy_mlops.pipelines import training_flow
-from energy_mlops.pipelines.training_flow import (
-    continuous_training_pipeline,
-    resolve_metric,
-)
+from energy_mlops.pipelines.training_flow import resolve_metric
 
 
 def test_resolve_metric_prefers_canonical_name():
@@ -124,48 +121,282 @@ def dummy_optimizer(
     }
 
 
-@patch(
-    "energy_mlops.pipelines.training_flow.evaluate_and_promote"
-)
-@patch(
-    "energy_mlops.pipelines.training_flow.fetch_expanding_window_data"
-)
-@patch.dict(
-    "energy_mlops.pipelines.training_flow.TRAINER_REGISTRY",
-    {"dummy": dummy_trainer},
-)
-@patch.dict(
-    "energy_mlops.pipelines.training_flow.OPTIMIZER_REGISTRY",
-    {"dummy": dummy_optimizer},
-)
-def test_continuous_training_pipeline_orchestration(
-    mock_fetch,
-    mock_evaluate,
-):
-    df_vazio = pd.DataFrame(
-        columns=["feature_1", "target_fc"]
+def test_continuous_training_pipeline_orchestration():
+    """
+    Valida a orquestração completa:
+
+    Gold explícito
+        -> auditoria
+        -> split temporal
+        -> auditoria train/OOT
+        -> persistência
+        -> otimização
+        -> treinamento
+        -> quality gate
+    """
+
+    snapshot_path = (
+        "s3://energy-lake/gold/"
+        "dataset_renewable_energy_2024_03_2026_09.parquet"
     )
 
-    mock_fetch.return_value = (
-        df_vazio,
-        df_vazio,
-        "dummy_train.parquet",
-        "dummy_test.parquet",
+    df_gold = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-31 23:00:00",
+                    "2026-09-01 03:00:00",
+                ]
+            ),
+        }
     )
 
-    mock_evaluate.return_value = None
-
-    continuous_training_pipeline(
-        trainer_name="dummy",
-        optimizer_name="dummy",
+    df_train = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-31 23:00:00",
+                ]
+            ),
+        }
     )
 
-    mock_fetch.assert_called_once()
-
-    mock_evaluate.assert_called_once_with(
-        "fake_run_id_999",
-        3.14,
+    df_test = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-09-01 03:00:00",
+                ]
+            ),
+        }
     )
+
+    optimization_result = {
+        "optimization_run_id": (
+            "optimization-run-123"
+        ),
+        "best_params": {
+            "example": "params",
+        },
+    }
+
+    with (
+        patch.object(
+            training_flow,
+            "load_gold_snapshot_task",
+            return_value=df_gold,
+        ) as mock_load,
+        patch.object(
+            training_flow,
+            "audit_gold_snapshot_task",
+        ) as mock_audit,
+        patch.object(
+            training_flow,
+            "split_expanding_window_task",
+            return_value=(
+                df_train,
+                df_test,
+            ),
+        ) as mock_split,
+        patch.object(
+            training_flow,
+            "persist_training_datasets_task",
+            return_value=(
+                "train.parquet",
+                "test.parquet",
+            ),
+        ) as mock_persist,
+        patch.object(
+            training_flow,
+            "optimize_hyperparameters",
+            return_value=optimization_result,
+        ) as mock_optimize,
+        patch.object(
+            training_flow,
+            "execute_training",
+            return_value=(
+                "challenger-run-123",
+                456.7,
+            ),
+        ) as mock_training,
+        patch.object(
+            training_flow,
+            "evaluate_and_promote",
+        ) as mock_quality_gate,
+    ):
+        training_flow.continuous_training_pipeline.fn(
+            trainer_name="stacking",
+            optimizer_name="stacking",
+            snapshot_path=snapshot_path,
+            oot_year=2026,
+            oot_month=9,
+        )
+
+    # --------------------------------------------------
+    # Load
+    # --------------------------------------------------
+    mock_load.assert_called_once_with(
+        snapshot_path=snapshot_path,
+    )
+
+    # --------------------------------------------------
+    # Auditoria
+    # consolidated + train + oot
+    # --------------------------------------------------
+    assert mock_audit.call_count == 3
+
+    assert (
+        mock_audit.call_args_list[0]
+        .kwargs["dataset_role"]
+        == "consolidated"
+    )
+
+    assert (
+        mock_audit.call_args_list[0]
+        .args[0]
+        is df_gold
+    )
+
+    assert (
+        mock_audit.call_args_list[1]
+        .kwargs["dataset_role"]
+        == "train"
+    )
+
+    assert (
+        mock_audit.call_args_list[1]
+        .args[0]
+        is df_train
+    )
+
+    assert (
+        mock_audit.call_args_list[2]
+        .kwargs["dataset_role"]
+        == "oot"
+    )
+
+    assert (
+        mock_audit.call_args_list[2]
+        .args[0]
+        is df_test
+    )
+
+    # --------------------------------------------------
+    # Split
+    # --------------------------------------------------
+    mock_split.assert_called_once()
+
+    split_args = (
+        mock_split.call_args
+    )
+
+    assert (
+        split_args.args[0]
+        is df_gold
+    )
+
+    assert (
+        split_args.kwargs["oot_year"]
+        == 2026
+    )
+
+    assert (
+        split_args.kwargs["oot_month"]
+        == 9
+    )
+
+    # --------------------------------------------------
+    # Persistência
+    # --------------------------------------------------
+    mock_persist.assert_called_once()
+
+    persist_args = (
+        mock_persist.call_args
+    )
+
+    assert (
+        persist_args.args[0]
+        is df_train
+    )
+
+    assert (
+        persist_args.args[1]
+        is df_test
+    )
+
+    assert (
+        persist_args.kwargs["oot_year"]
+        == 2026
+    )
+
+    assert (
+        persist_args.kwargs["oot_month"]
+        == 9
+    )
+
+    # --------------------------------------------------
+    # Optuna
+    # --------------------------------------------------
+    mock_optimize.assert_called_once()
+
+    optimize_kwargs = (
+        mock_optimize.call_args.kwargs
+    )
+
+    assert (
+        optimize_kwargs["df_train"]
+        is df_train
+    )
+
+    assert (
+        optimize_kwargs["train_file"]
+        == "train.parquet"
+    )
+
+    # --------------------------------------------------
+    # Training
+    # --------------------------------------------------
+    mock_training.assert_called_once()
+
+    training_kwargs = (
+        mock_training.call_args.kwargs
+    )
+
+    assert (
+        training_kwargs[
+            "optimization_result"
+        ]
+        == optimization_result
+    )
+
+    assert (
+        training_kwargs["df_train"]
+        is df_train
+    )
+
+    assert (
+        training_kwargs["df_test"]
+        is df_test
+    )
+
+    assert (
+        training_kwargs["train_file"]
+        == "train.parquet"
+    )
+
+    assert (
+        training_kwargs["test_file"]
+        == "test.parquet"
+    )
+
+    # --------------------------------------------------
+    # Quality Gate
+    # --------------------------------------------------
+    mock_quality_gate.assert_called_once_with(
+        "challenger-run-123",
+        456.7,
+    )
+
 
 def test_execute_training_without_optimizer_passes_none_to_trainer():
     """
@@ -218,26 +449,73 @@ def test_execute_training_without_optimizer_passes_none_to_trainer():
 
 def test_continuous_training_pipeline_skips_optimizer_when_none():
     """
-    optimizer_name='none' deve pular completamente a etapa de otimização
-    e encaminhar optimization_result=None para o treinamento.
+    optimizer_name='none' deve pular completamente
+    a otimização, mantendo todas as etapas de
+    preparação e auditoria dos dados.
     """
 
-    df_train = pd.DataFrame({"value": [1, 2]})
-    df_test = pd.DataFrame({"value": [3]})
+    snapshot_path = (
+        "s3://energy-lake/gold/"
+        "dataset_test.parquet"
+    )
 
-    fake_datasets = (
-        df_train,
-        df_test,
-        "train.parquet",
-        "test.parquet",
+    df_gold = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-01 03:00:00",
+                    "2026-09-01 03:00:00",
+                ]
+            ),
+        }
+    )
+
+    df_train = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-01 03:00:00",
+                ]
+            ),
+        }
+    )
+
+    df_test = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-09-01 03:00:00",
+                ]
+            ),
+        }
     )
 
     with (
         patch.object(
             training_flow,
-            "fetch_expanding_window_data",
-            return_value=fake_datasets,
-        ) as mock_fetch,
+            "load_gold_snapshot_task",
+            return_value=df_gold,
+        ) as mock_load,
+        patch.object(
+            training_flow,
+            "audit_gold_snapshot_task",
+        ) as mock_audit,
+        patch.object(
+            training_flow,
+            "split_expanding_window_task",
+            return_value=(
+                df_train,
+                df_test,
+            ),
+        ) as mock_split,
+        patch.object(
+            training_flow,
+            "persist_training_datasets_task",
+            return_value=(
+                "train.parquet",
+                "test.parquet",
+            ),
+        ) as mock_persist,
         patch.object(
             training_flow,
             "optimize_hyperparameters",
@@ -245,7 +523,10 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
         patch.object(
             training_flow,
             "execute_training",
-            return_value=("challenger-run-123", 456.7),
+            return_value=(
+                "challenger-run-123",
+                456.7,
+            ),
         ) as mock_training,
         patch.object(
             training_flow,
@@ -255,21 +536,55 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
         training_flow.continuous_training_pipeline.fn(
             trainer_name="stacking",
             optimizer_name="none",
+            snapshot_path=snapshot_path,
+            oot_year=2026,
+            oot_month=9,
         )
 
-    mock_fetch.assert_called_once()
+    mock_load.assert_called_once_with(
+        snapshot_path=snapshot_path,
+    )
 
-    # O ponto principal do teste:
-    # optimizer_name="none" não deve executar Optuna.
+    assert mock_audit.call_count == 3
+
+    mock_split.assert_called_once()
+
+    mock_persist.assert_called_once()
+
+    # Este é o contrato central deste teste.
     mock_optimize.assert_not_called()
 
-    mock_training.assert_called_once_with(
-        trainer_func=training_flow.TRAINER_REGISTRY["stacking"],
-        optimization_result=None,
-        df_train=df_train,
-        df_test=df_test,
-        train_file="train.parquet",
-        test_file="test.parquet",
+    mock_training.assert_called_once()
+
+    training_kwargs = (
+        mock_training.call_args.kwargs
+    )
+
+    assert (
+        training_kwargs[
+            "optimization_result"
+        ]
+        is None
+    )
+
+    assert (
+        training_kwargs["df_train"]
+        is df_train
+    )
+
+    assert (
+        training_kwargs["df_test"]
+        is df_test
+    )
+
+    assert (
+        training_kwargs["train_file"]
+        == "train.parquet"
+    )
+
+    assert (
+        training_kwargs["test_file"]
+        == "test.parquet"
     )
 
     mock_quality_gate.assert_called_once_with(
@@ -292,3 +607,140 @@ def test_continuous_training_pipeline_rejects_unknown_optimizer():
             trainer_name="stacking",
             optimizer_name="unknown",
         )
+
+
+def test_get_local_month_bounds_utc():
+    start, end = (
+        training_flow
+        .get_local_month_bounds_utc(
+            2026,
+            9,
+        )
+    )
+
+    assert start == pd.Timestamp(
+        "2026-09-01 03:00:00"
+    )
+
+    assert end == pd.Timestamp(
+        "2026-10-01 03:00:00"
+    )
+
+
+def test_split_expanding_window_snapshot_uses_local_month():
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-09-01 01:00:00",
+                    "2026-09-01 02:00:00",
+                    "2026-09-01 03:00:00",
+                    "2026-09-01 04:00:00",
+                    "2026-10-01 02:00:00",
+                ]
+            ),
+            "target_fc": [
+                0.1,
+                0.2,
+                0.3,
+                0.4,
+                0.5,
+            ],
+        }
+    )
+
+    train, oot = (
+        training_flow
+        .split_expanding_window_snapshot(
+            df,
+            oot_year=2026,
+            oot_month=9,
+        )
+    )
+
+    assert train["date"].tolist() == [
+        pd.Timestamp(
+            "2026-09-01 01:00:00"
+        ),
+        pd.Timestamp(
+            "2026-09-01 02:00:00"
+        ),
+    ]
+
+    assert oot["date"].min() == (
+        pd.Timestamp(
+            "2026-09-01 03:00:00"
+        )
+    )
+
+    assert oot["date"].max() == (
+        pd.Timestamp(
+            "2026-10-01 02:00:00"
+        )
+    )
+
+
+def test_split_expanding_window_snapshot_rejects_incomplete_oot():
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-09-01 03:00:00",
+                    "2026-09-30 02:00:00",
+                ]
+            ),
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="mês OOT completo",
+    ):
+        (
+            training_flow
+            .split_expanding_window_snapshot(
+                df,
+                oot_year=2026,
+                oot_month=9,
+            )
+        )
+
+
+def test_split_expanding_window_snapshot_has_no_overlap():
+    dates = pd.date_range(
+        "2026-08-31 23:00:00",
+        "2026-10-01 02:00:00",
+        freq="1h",
+    )
+
+    df = pd.DataFrame(
+        {
+            "date": dates,
+        }
+    )
+
+    train, oot = (
+        training_flow
+        .split_expanding_window_snapshot(
+            df,
+            oot_year=2026,
+            oot_month=9,
+        )
+    )
+
+    assert (
+        train["date"].max()
+        < oot["date"].min()
+    )
+
+    assert train["date"].max() == (
+        pd.Timestamp(
+            "2026-09-01 02:00:00"
+        )
+    )
+
+    assert oot["date"].min() == (
+        pd.Timestamp(
+            "2026-09-01 03:00:00"
+        )
+    )

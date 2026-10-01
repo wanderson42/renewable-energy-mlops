@@ -8,6 +8,10 @@ from prefect import flow, task
 from energy_mlops.data.build_features import generate_wind_and_time_features
 from energy_mlops.data.extract_energy import fetch_ons_wind_generation
 from energy_mlops.data.extract_weather import fetch_open_meteo_wind_data
+from energy_mlops.data.snapshot_validation import (
+    SnapshotAuditResult,
+    audit_gold_snapshot,
+)
 
 # Importamos as configurações do nosso Data Lake
 from energy_mlops.pipelines.utils import save_dataset_to_lake_or_local
@@ -122,6 +126,29 @@ def transform_features_task(df: pd.DataFrame) -> pd.DataFrame:
     return generate_wind_and_time_features(df)
 
 
+
+@task(name="Auditar_Snapshot_Gold")
+def audit_gold_snapshot_task(
+    df: pd.DataFrame,
+) -> SnapshotAuditResult:
+    report = audit_gold_snapshot(
+        df
+    )
+
+    print(
+        "Gold auditado com sucesso | "
+        f"rows={report.rows:,} | "
+        f"range={report.start_date} "
+        f"→ {report.end_date} | "
+        "missing_timestamps="
+        f"{report.missing_timestamps} | "
+        f"gaps={report.gap_count} | "
+        f"features={report.feature_count}"
+    )
+
+    return report
+
+
 @flow(name="Pipeline_de_Ingestao", log_prints=True)
 def data_ingestion_flow(year: int = 2025, month: int = 1):
     """Flow principal que orquestra todo o processo."""
@@ -161,7 +188,10 @@ def data_ingestion_flow(year: int = 2025, month: int = 1):
 
     print("Aplicando Engenharia de Features (Física e Sazonalidade)...")
     df_full = transform_features_task(df_merged)
-    
+
+    print("Auditando o Snapshot Gold Dataset...")
+    audit_gold_snapshot_task(df_full)
+
     print(f"Pipeline concluído! Dataset final gerado com {len(df_full)} registros.")
     print(df_full.head())
     
@@ -175,6 +205,8 @@ def data_ingestion_flow(year: int = 2025, month: int = 1):
     final_path = save_dataset_to_lake_or_local(df_full, key, local_path)
 
     return final_path
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
