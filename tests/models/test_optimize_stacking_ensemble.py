@@ -6,43 +6,84 @@ import pandas as pd
 import pytest
 
 import energy_mlops.models.optimize_stacking_ensemble as optimization_module
-from energy_mlops.models.optimize_stacking_ensemble import (
-    objective,
-    run_optimization,
-)
+from energy_mlops.models.optimize_stacking_ensemble import objective
 
 
 def test_run_optimization_returns_optimization_result():
-    '''
-    run_optimization()
-        │
-        ├── optuna.create_study() → mock
-        │
-        ├── study.optimize()      → mock
-        │
-        ├── mlflow.data.from_pandas() → mock
-        │
-        ├── mlflow.log_input()    → mock
-        │
-        └── retorna OptimizationResult
-    '''
+    """
+    Garante que run_optimization():
+
+    - usa o contrato canônico de features;
+    - executa o estudo Optuna;
+    - repassa corretamente targets e capacidade ao objective;
+    - registra lineage e métricas no MLflow;
+    - retorna OptimizationResult;
+    - não depende de um servidor MLflow real.
+    """
+
+    # --------------------------------------------------
+    # Dataset mínimo
+    # --------------------------------------------------
     df_train = pd.DataFrame(
         {
             "temperature_2m": [20.0, 21.0, 22.0],
             "wind_speed_100m": [8.0, 9.0, 10.0],
-            "wind_direction_100m": [180.0, 190.0, 200.0],
-            "wind_temp_ratio": [0.4, 0.43, 0.45],
-            "hour_sin": [0.0, 0.26, 0.5],
-            "hour_cos": [1.0, 0.97, 0.87],
-            "month_sin": [0.5, 0.5, 0.5],
-            "month_cos": [0.86, 0.86, 0.86],
-            "wind_speed_roll_mean_3h": [8.0, 8.5, 9.0],
-            "target_fc": [0.30, 0.35, 0.40],
-            "capacidade_mw": [100.0, 200.0, 400.0],
-            "wind_generation_mw": [30.0, 70.0, 160.0]
+            "wind_direction_100m": [
+                180.0,
+                190.0,
+                200.0,
+            ],
+            "wind_temp_ratio": [
+                0.4,
+                0.43,
+                0.45,
+            ],
+            "hour_sin": [
+                0.0,
+                0.26,
+                0.5,
+            ],
+            "hour_cos": [
+                1.0,
+                0.97,
+                0.87,
+            ],
+            "month_sin": [
+                0.5,
+                0.5,
+                0.5,
+            ],
+            "month_cos": [
+                0.86,
+                0.86,
+                0.86,
+            ],
+            "wind_speed_roll_mean_3h": [
+                8.0,
+                8.5,
+                9.0,
+            ],
+            "target_fc": [
+                0.30,
+                0.35,
+                0.40,
+            ],
+            "capacidade_mw": [
+                100.0,
+                200.0,
+                400.0,
+            ],
+            "wind_generation_mw": [
+                30.0,
+                70.0,
+                160.0,
+            ],
         }
     )
 
+    # --------------------------------------------------
+    # Melhor trial Optuna falso
+    # --------------------------------------------------
     best_params_raw = {
         "lgb_n_estimators": 200,
         "lgb_learning_rate": 0.05,
@@ -71,62 +112,39 @@ def test_run_optimization_returns_optimization_result():
     fake_study = MagicMock()
     fake_study.best_trial = fake_trial
 
-    fake_run = MagicMock()
-    fake_run.info.run_id = "fake-optimization-run-123"
+    fake_run = SimpleNamespace(
+        info=SimpleNamespace(
+            run_id="fake-optimization-run-123",
+        )
+    )
 
     fake_objective_trial = MagicMock()
 
+    # --------------------------------------------------
+    # Dependências externas isoladas
+    # --------------------------------------------------
     with (
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "optuna.create_study",
+        patch.object(
+            optimization_module.optuna,
+            "create_study",
             return_value=fake_study,
         ) as mock_create_study,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
+        patch.object(
+            optimization_module,
             "objective",
             return_value=5.833333333333333,
         ) as mock_objective,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.start_run",
-        ) as mock_start_run,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.set_tracking_uri",
-        ),
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.set_experiment",
-        ),
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.data.from_pandas",
-            return_value=MagicMock(),
-        ) as mock_from_pandas,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.log_input",
-        ) as mock_log_input,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.log_params",
-        ),
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.log_param",
-        ) as mock_log_param,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.log_metric",
-        ) as mock_log_metric,
-        patch(
-            "energy_mlops.models.optimize_stacking_ensemble."
-            "mlflow.log_dict",
-        ),
+        patch.object(
+            optimization_module,
+            "mlflow",
+        ) as mock_mlflow,
     ):
-        mock_start_run.return_value.__enter__.return_value = (
+        mock_mlflow.start_run.return_value.__enter__.return_value = (
             fake_run
+        )
+
+        mock_mlflow.data.from_pandas.return_value = (
+            MagicMock()
         )
 
         def execute_fake_optimization(
@@ -141,7 +159,7 @@ def test_run_optimization_returns_optimization_result():
             execute_fake_optimization
         )
 
-        result = run_optimization(
+        result = optimization_module.run_optimization(
             df_train=df_train,
             train_file="dataset_train.parquet",
             n_trials=10,
@@ -209,12 +227,16 @@ def test_run_optimization_returns_optimization_result():
     )
 
     assert (
-        objective_call.kwargs["stacking_n_splits"]
+        objective_call.kwargs[
+            "stacking_n_splits"
+        ]
         == 5
     )
 
     assert (
-        objective_call.kwargs["enabled_estimators"]
+        objective_call.kwargs[
+            "enabled_estimators"
+        ]
         == (
             "lgbm",
             "xgboost",
@@ -223,30 +245,33 @@ def test_run_optimization_returns_optimization_result():
     )
 
     # --------------------------------------------------
-    # Dataset lineage
+    # MLflow completamente isolado
     # --------------------------------------------------
-    mock_from_pandas.assert_called_once()
-    mock_log_input.assert_called_once()
+    mock_mlflow.start_run.assert_called_once()
+
+    mock_mlflow.data.from_pandas.assert_called_once()
+
+    mock_mlflow.log_input.assert_called_once()
 
     # --------------------------------------------------
     # Governança da otimização
     # --------------------------------------------------
-    mock_log_param.assert_any_call(
+    mock_mlflow.log_param.assert_any_call(
         "outer_cv_n_splits",
         3,
     )
 
-    mock_log_param.assert_any_call(
+    mock_mlflow.log_param.assert_any_call(
         "stacking_cv_n_splits",
         5,
     )
 
-    mock_log_param.assert_any_call(
+    mock_mlflow.log_param.assert_any_call(
         "num_features",
         9,
     )
 
-    mock_log_param.assert_any_call(
+    mock_mlflow.log_param.assert_any_call(
         "optimization_metric",
         "nmae_pct",
     )
@@ -254,22 +279,24 @@ def test_run_optimization_returns_optimization_result():
     # --------------------------------------------------
     # Métricas da melhor trial
     # --------------------------------------------------
-    mock_log_metric.assert_any_call(
+    mock_mlflow.log_metric.assert_any_call(
         "best_cv_nmae_pct_mean",
-        pytest.approx(5.833333333333333),
+        pytest.approx(
+            5.833333333333333
+        ),
     )
 
-    mock_log_metric.assert_any_call(
+    mock_mlflow.log_metric.assert_any_call(
         "best_cv_nmae_pct_std",
         pytest.approx(0.0),
     )
 
-    mock_log_metric.assert_any_call(
+    mock_mlflow.log_metric.assert_any_call(
         "best_cv_mae_fc_pct_mean",
         pytest.approx(10.0),
     )
 
-    mock_log_metric.assert_any_call(
+    mock_mlflow.log_metric.assert_any_call(
         "best_cv_r2_mean",
         pytest.approx(-149.0),
     )
@@ -282,7 +309,7 @@ def test_run_optimization_returns_optimization_result():
         == "fake-optimization-run-123"
     )
 
-    assert result["best_params"] == {
+    expected_best_params = {
         "lgb_params": {
             "n_estimators": 200,
             "learning_rate": 0.05,
@@ -312,6 +339,11 @@ def test_run_optimization_returns_optimization_result():
             "n_jobs": -1,
         },
     }
+
+    assert (
+        result["best_params"]
+        == expected_best_params
+    )
 
 
 def test_objective_uses_temporal_stacking_without_future_leakage():
