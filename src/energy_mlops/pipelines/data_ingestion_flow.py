@@ -13,26 +13,98 @@ from energy_mlops.data.extract_weather import fetch_open_meteo_wind_data
 from energy_mlops.pipelines.utils import save_dataset_to_lake_or_local
 
 
-@task(name="Extrair_Dados_Climaticos", retries=2, retry_delay_seconds=10)
-def extract_weather_task(start_date: str, end_date: str) -> pd.DataFrame:
-    """Task do Prefect para extrair o clima. Tenta novamente em caso de falha de rede."""
-    df = fetch_open_meteo_wind_data(start_date=start_date, end_date=end_date)
-    if df is None:
-        raise ValueError("Falha ao extrair dados climáticos.")
-    return df
+def validate_energy_month_boundary(
+    df_energy: pd.DataFrame,
+    year: int,
+    month: int,
+) -> None:
+    """
+    Valida se a série ONS alcança a última hora
+    esperada do mês solicitado.
+
+    Lacunas internas podem existir devido ao controle
+    de qualidade do extractor, mas o final truncado do
+    mês indica que a publicação ainda está incompleta.
+    """
+
+    if df_energy.empty:
+        raise ValueError(
+            "Dataset ONS vazio para "
+            f"{year}-{month:02d}."
+        )
+
+    last_day = calendar.monthrange(
+        year,
+        month,
+    )[1]
+
+    expected_last_local = pd.Timestamp(
+        year=year,
+        month=month,
+        day=last_day,
+        hour=23,
+        tz="America/Sao_Paulo",
+    )
+
+    expected_last_utc = (
+        expected_last_local
+        .tz_convert("UTC")
+        .tz_localize(None)
+    )
+
+    actual_last = pd.to_datetime(
+        df_energy["date"]
+    ).max()
+
+    if actual_last < expected_last_utc:
+        raise ValueError(
+            "Mês ONS ainda incompleto para "
+            f"{year}-{month:02d}. "
+            f"Última hora disponível: {actual_last}. "
+            "Última hora esperada: "
+            f"{expected_last_utc}."
+        )
 
 
-@task(name="Extrair_Dados_Energia", retries=2, retry_delay_seconds=10)
-def extract_energy_task(year: int, month: int) -> pd.DataFrame:
-    """Task do Prefect para extrair a geração do ONS."""
-    df = fetch_ons_wind_generation(year=year, month=month)
-    if df is None:
-        raise ValueError("Falha ao extrair dados de energia.")
-    return df
+@task(
+    name="Extrair_Dados_Climaticos",
+    retries=2,
+    retry_delay_seconds=10,
+)
+def extract_weather_task(
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """Extrai os dados meteorológicos do Open-Meteo."""
+    return fetch_open_meteo_wind_data(
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
-@task(name="Mesclar_e_Limpar_Dados")
-def merge_datasets_task(df_weather: pd.DataFrame, df_energy: pd.DataFrame) -> pd.DataFrame:
+@task(
+    name="Extrair_Dados_Energia",
+    retries=2,
+    retry_delay_seconds=10,
+)
+def extract_energy_task(
+    year: int,
+    month: int,
+) -> pd.DataFrame:
+    """Extrai a geração eólica horária do ONS."""
+    return fetch_ons_wind_generation(
+        year=year,
+        month=month,
+    )
+
+
+@task(
+    name="Mesclar_e_Limpar_Dados",
+)
+def merge_datasets_task(
+    df_weather: pd.DataFrame,
+    df_energy: pd.DataFrame
+) -> pd.DataFrame:
     """Une (JOIN) os DataFrames pela data (já alinhada em UTC) e trata os nulos."""
     
     # Inner join garante que só manteremos as horas que existem em AMBAS as fontes
@@ -62,11 +134,30 @@ def data_ingestion_flow(year: int = 2025, month: int = 1):
     print(f"Iniciando Pipeline de Ingestão para {year}-{month:02d}...")
 
     # Executa as tasks de extração
-    df_weather = extract_weather_task(start_date=start_date, end_date=end_date)
-    df_energy = extract_energy_task(year=year, month=month)
-    
-    # Une os dados
-    df_merged = merge_datasets_task(df_weather=df_weather, df_energy=df_energy)
+    df_weather = extract_weather_task(
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    df_energy = extract_energy_task(
+        year=year,
+        month=month,
+    )
+
+    # Garante que a publicação ONS alcançou
+    # o fechamento do mês solicitado.
+    validate_energy_month_boundary(
+        df_energy=df_energy,
+        year=year,
+        month=month,
+    )
+
+    # Une os dados somente após validar
+    # o fechamento da série de energia.
+    df_merged = merge_datasets_task(
+        df_weather=df_weather,
+        df_energy=df_energy,
+    )
 
     print("Aplicando Engenharia de Features (Física e Sazonalidade)...")
     df_full = transform_features_task(df_merged)
