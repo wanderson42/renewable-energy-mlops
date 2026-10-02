@@ -26,13 +26,15 @@ ports: stop-ports
 	@mkdir -p $(PORT_LOG_DIR)
 	@rm -f $(PORT_LOG_DIR)/*.log
 
-	@nohup kubectl port-forward svc/rustfs 9000:9000 \
+	@nohup bash scripts/port-forward-supervisor.sh \
+		rustfs-api rustfs 9000:9000 \
 		> $(PORT_LOG_DIR)/rustfs-api.log 2>&1 &
 
 	@nohup kubectl port-forward svc/rustfs 9001:9001 \
 		> $(PORT_LOG_DIR)/rustfs-console.log 2>&1 &
 
-	@nohup bash scripts/mlflow-port-forward.sh \
+	@nohup bash scripts/port-forward-supervisor.sh \
+		mlflow mlflow 5000:5000 \
 		> $(PORT_LOG_DIR)/mlflow.log 2>&1 &
 
 	@nohup kubectl port-forward svc/energy-api 8000:8000 \
@@ -59,8 +61,8 @@ ports: stop-ports
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."
 
-	@-pkill -f "[m]lflow-port-forward.sh" \
-		|| echo "Nenhum supervisor MLflow ativo."
+	@-pkill -f "[p]ort-forward-supervisor.sh" \
+		|| echo "Nenhum supervisor de port-forward ativo."
 
 	@-pkill -f "[k]ubectl port-forward" \
 		|| echo "Nenhum port-forward ativo."
