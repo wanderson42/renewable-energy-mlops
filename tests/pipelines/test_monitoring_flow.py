@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 
 from energy_mlops.data.feature_utils import get_model_feature_columns
-from energy_mlops.pipelines import monitoring_flow
-from energy_mlops.pipelines.monitoring_flow import (
+from energy_mlops.models.evaluation import (
     align_features_to_model,
 )
+from energy_mlops.pipelines import monitoring_flow
 
 ''''
     Testes unitários para o pipeline de monitoramento.

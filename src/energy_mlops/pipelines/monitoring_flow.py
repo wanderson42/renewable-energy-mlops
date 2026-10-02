@@ -19,7 +19,6 @@ from energy_mlops.data.feature_utils import (
     select_model_features,
 )
 from energy_mlops.models.evaluation import (
-    align_features_to_model,
     evaluate_model_on_oot,
     get_model_feature_order,
 )
