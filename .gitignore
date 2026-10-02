@@ -9,10 +9,8 @@ shap_importance.csv
 *.log
 
 # Logs
-.ports.log
 *.log
-.prefect.log
-.dashboard.log
+.ports/
 
 # Python / Compilados
 __pycache__/
