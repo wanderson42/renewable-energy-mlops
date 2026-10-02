@@ -20,6 +20,10 @@ from energy_mlops.data.snapshot_validation import audit_gold_snapshot
 from energy_mlops.models.evaluation import (
     evaluate_model_on_oot,
 )
+from energy_mlops.models.governance import (
+    build_automatic_governance_tags,
+    persist_governance_tags,
+)
 from energy_mlops.models.interfaces import (
     ModelOptimizer,
     ModelTrainer,
@@ -944,6 +948,8 @@ def get_registered_model_version(
 def evaluate_and_promote(
     challenger_run_id: str,
     df_oot: pd.DataFrame,
+    *,
+    oot_dataset: str | None = None,
 ):
     """
     Compara Champion e Challenger sobre exatamente o mesmo OOT.
@@ -985,6 +991,12 @@ def evaluate_and_promote(
 
     nmae_diff = None
     champion_mae = None
+    champion_nmae = None
+    challenger_mae = None
+    challenger_nmae = None
+    champion_features = None
+    previous_champion_version = None
+    previous_champion_run_id = None
 
     try:
         champion_info = (
@@ -1003,8 +1015,17 @@ def evaluate_and_promote(
         promotion_reason = (
             "FIRST_CHAMPION"
         )
+        automatic_decision = "PROMOTE"
+        decision_reason = promotion_reason
 
     else:
+        previous_champion_version = str(
+            champion_info.version
+        )
+        previous_champion_run_id = (
+            champion_info.run_id
+        )
+
         champion_run = client.get_run(
             champion_info.run_id
         )
@@ -1115,12 +1136,16 @@ def evaluate_and_promote(
             promotion_reason = (
                 "MAE_IMPROVED_SAME_OOT"
             )
+            automatic_decision = "PROMOTE"
+            decision_reason = promotion_reason
 
         elif within_tolerance:
             promotion_reason = (
                 "PARSIMONY_WITHIN_"
                 "NMAE_TOLERANCE_SAME_OOT"
             )
+            automatic_decision = "PROMOTE"
+            decision_reason = promotion_reason
 
         else:
             if champion_features is None:
@@ -1154,6 +1179,47 @@ def evaluate_and_promote(
                     f"{NMAE_SIMPLIFICATION_TOLERANCE_PP:.4f} "
                     "p.p."
                 )
+
+            automatic_decision = "REJECT"
+            decision_reason = reason
+
+            governance_tags = (
+                build_automatic_governance_tags(
+                    df_oot=df_oot,
+                    oot_dataset=oot_dataset,
+                    model_name=MODEL_NAME,
+                    model_alias=MODEL_ALIAS,
+                    automatic_decision=automatic_decision,
+                    decision_reason=decision_reason,
+                    previous_champion_version=(
+                        previous_champion_version
+                    ),
+                    previous_champion_run_id=(
+                        previous_champion_run_id
+                    ),
+                    challenger_version=str(
+                        challenger_version
+                    ),
+                    challenger_run_id=challenger_run_id,
+                    champion_num_features=champion_features,
+                    challenger_num_features=(
+                        challenger_features
+                    ),
+                    champion_mae_mw=champion_mae,
+                    champion_nmae_pct=champion_nmae,
+                    challenger_mae_mw=challenger_mae,
+                    challenger_nmae_pct=challenger_nmae,
+                    nmae_simplification_tolerance_pp=(
+                        NMAE_SIMPLIFICATION_TOLERANCE_PP
+                    ),
+                )
+            )
+
+            persist_governance_tags(
+                client,
+                run_id=challenger_run_id,
+                tags=governance_tags,
+            )
 
             logger.warning(
                 "❌ Challenger rejeitado: "
@@ -1220,6 +1286,44 @@ def evaluate_and_promote(
             if nmae_diff is None
             else str(nmae_diff)
         ),
+    )
+
+    governance_tags = (
+        build_automatic_governance_tags(
+            df_oot=df_oot,
+            oot_dataset=oot_dataset,
+            model_name=MODEL_NAME,
+            model_alias=MODEL_ALIAS,
+            automatic_decision=automatic_decision,
+            decision_reason=decision_reason,
+            previous_champion_version=(
+                previous_champion_version
+            ),
+            previous_champion_run_id=(
+                previous_champion_run_id
+            ),
+            challenger_version=str(
+                challenger_version
+            ),
+            challenger_run_id=challenger_run_id,
+            champion_num_features=champion_features,
+            challenger_num_features=(
+                challenger_features
+            ),
+            champion_mae_mw=champion_mae,
+            champion_nmae_pct=champion_nmae,
+            challenger_mae_mw=challenger_mae,
+            challenger_nmae_pct=challenger_nmae,
+            nmae_simplification_tolerance_pp=(
+                NMAE_SIMPLIFICATION_TOLERANCE_PP
+            ),
+        )
+    )
+
+    persist_governance_tags(
+        client,
+        run_id=challenger_run_id,
+        tags=governance_tags,
     )
 
     logger.info(
@@ -1456,6 +1560,7 @@ def continuous_training_pipeline(
     evaluate_and_promote(
         challenger_run_id,
         df_test,
+        oot_dataset=test_file,
     )
 
     logger.info(

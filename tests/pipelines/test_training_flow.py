@@ -408,6 +408,7 @@ def test_continuous_training_pipeline_orchestration():
     mock_quality_gate.assert_called_once_with(
         "challenger-run-123",
         df_test,
+        oot_dataset="test.parquet",
     )
 
 
@@ -624,6 +625,7 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
     mock_quality_gate.assert_called_once_with(
         "challenger-run-123",
         df_test,
+        oot_dataset="test.parquet",
     )
 
 
@@ -1092,6 +1094,7 @@ def _run_quality_gate_with_same_oot_metrics(
         training_flow.evaluate_and_promote.fn(
             "challenger-run-20",
             df_oot,
+            oot_dataset="oot_test.parquet",
         )
 
     return {
@@ -1141,6 +1144,42 @@ def test_quality_gate_promotes_challenger_using_same_oot():
         "MAE_IMPROVED_SAME_OOT",
     )
 
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_automatic_decision",
+        "PROMOTE",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_final_decision",
+        "PROMOTE",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_previous_champion_version",
+        "10",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_previous_champion_run_id",
+        "champion-run-10",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_champion_mae_mw_same_oot",
+        "900.0",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_challenger_mae_mw_same_oot",
+        "800.0",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_oot_dataset",
+        "oot_test.parquet",
+    )
+
 
 def test_quality_gate_rejects_worse_challenger_on_same_oot():
     result = _run_quality_gate_with_same_oot_metrics(
@@ -1157,6 +1196,21 @@ def test_quality_gate_rejects_worse_challenger_on_same_oot():
         "challenger-run-20",
         "quality_gate_status",
         "REJECTED",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_automatic_decision",
+        "REJECT",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_final_decision",
+        "REJECT",
+    )
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "governance_decision_source",
+        "AUTOMATIC",
     )
 
 
@@ -1236,6 +1290,7 @@ def test_quality_gate_promotes_first_champion_without_same_oot_comparison():
         training_flow.evaluate_and_promote.fn(
             "challenger-run-1",
             df_oot,
+            oot_dataset="oot_test.parquet",
         )
 
     mock_evaluate.assert_not_called()
@@ -1250,4 +1305,13 @@ def test_quality_gate_promotes_first_champion_without_same_oot_comparison():
         "quality_gate_decision_reason",
         "FIRST_CHAMPION",
     )
-
+    fake_client.set_tag.assert_any_call(
+        "challenger-run-1",
+        "governance_automatic_decision",
+        "PROMOTE",
+    )
+    fake_client.set_tag.assert_any_call(
+        "challenger-run-1",
+        "governance_previous_champion_version",
+        "N/A",
+    )
