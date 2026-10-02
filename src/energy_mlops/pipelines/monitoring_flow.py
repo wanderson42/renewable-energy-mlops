@@ -4,14 +4,12 @@ from typing import Any
 
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import pandas as pd
 import s3fs
 from evidently import Report
 from evidently.presets import DataDriftPreset
 from mlflow.tracking import MlflowClient
 from prefect import flow, get_run_logger, task
-from sklearn.metrics import mean_absolute_error
 
 from energy_mlops.config import settings
 from energy_mlops.data.build_features import (
@@ -19,6 +17,11 @@ from energy_mlops.data.build_features import (
 )
 from energy_mlops.data.feature_utils import (
     select_model_features,
+)
+from energy_mlops.models.evaluation import (
+    align_features_to_model,
+    evaluate_model_on_oot,
+    get_model_feature_order,
 )
 from energy_mlops.pipelines.training_flow import (
     continuous_training_pipeline,
@@ -462,199 +465,9 @@ def save_report_to_s3(
 
 
 # ==============================================================================
-# 6. CONTRATO DE FEATURES DO CHAMPION
+# 6. PERFORMANCE DRIFT
 # ==============================================================================
 
-def _normalize_feature_names(
-    feature_names: Any,
-) -> list[str] | None:
-    """
-    Normaliza uma coleção de nomes de features
-    para list[str].
-    """
-
-    if feature_names is None:
-        return None
-
-    names = [
-        str(name)
-        for name in feature_names
-    ]
-
-    if not names:
-        return None
-
-    return names
-
-
-def _extract_estimator_feature_names(
-    estimator: Any,
-) -> list[str] | None:
-    """
-    Extrai a ordem de features de um estimador.
-
-    Primeiro utiliza feature_names_in_, contrato
-    padrão do scikit-learn.
-
-    Para estimadores XGBoost antigos, utiliza
-    também feature_names armazenado no Booster.
-    """
-
-    feature_names = (
-        _normalize_feature_names(
-            getattr(
-                estimator,
-                "feature_names_in_",
-                None,
-            )
-        )
-    )
-
-    if feature_names is not None:
-        return feature_names
-
-    get_booster = getattr(
-        estimator,
-        "get_booster",
-        None,
-    )
-
-    if callable(
-        get_booster
-    ):
-        booster = get_booster()
-
-        feature_names = (
-            _normalize_feature_names(
-                getattr(
-                    booster,
-                    "feature_names",
-                    None,
-                )
-            )
-        )
-
-        if feature_names is not None:
-            return feature_names
-
-    return None
-
-
-def get_model_feature_order(
-    model: Any,
-) -> list[str]:
-    """
-    Recupera a ordem de features utilizada
-    pelo Champion carregado.
-
-    Ordem de procura:
-
-    1. contrato do modelo principal;
-    2. estimadores nomeados de modelos compostos;
-    3. lista de estimadores internos.
-
-    Isso permite servir e monitorar modelos
-    históricos sem alterar o contrato canônico
-    atual do projeto.
-    """
-
-    feature_names = (
-        _extract_estimator_feature_names(
-            model
-        )
-    )
-
-    if feature_names is not None:
-        return feature_names
-
-    named_estimators = getattr(
-        model,
-        "named_estimators_",
-        None,
-    )
-
-    if named_estimators is not None:
-        for estimator in (
-            named_estimators.values()
-        ):
-            feature_names = (
-                _extract_estimator_feature_names(
-                    estimator
-                )
-            )
-
-            if feature_names is not None:
-                return feature_names
-
-    estimators = getattr(
-        model,
-        "estimators_",
-        None,
-    )
-
-    if estimators is not None:
-        for estimator in estimators:
-            feature_names = (
-                _extract_estimator_feature_names(
-                    estimator
-                )
-            )
-
-            if feature_names is not None:
-                return feature_names
-
-    raise RuntimeError(
-        "Não foi possível determinar a ordem "
-        "de features esperada pelo Champion."
-    )
-
-
-def align_features_to_model(
-    model: Any,
-    X: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Reordena as features para o contrato
-    de entrada do Champion.
-
-    O DataFrame original não é alterado.
-
-    O contrato canônico do projeto permanece
-    independente da ordem utilizada por modelos
-    históricos registrados no MLflow.
-    """
-
-    expected_features = (
-        get_model_feature_order(
-            model
-        )
-    )
-
-    missing_features = [
-        feature
-        for feature in expected_features
-        if feature not in X.columns
-    ]
-
-    if missing_features:
-        raise RuntimeError(
-            "Features obrigatórias do Champion "
-            "ausentes no dataset de monitoramento: "
-            f"{missing_features}"
-        )
-
-    return (
-        X.loc[
-            :,
-            expected_features,
-        ]
-        .copy()
-    )
-
-
-# ==============================================================================
-# 7. PERFORMANCE DRIFT
-# ==============================================================================
 
 @task(
     name="Avaliar Performance Drift"
@@ -764,85 +577,21 @@ def evaluate_performance_drift(
         )
     )
 
-    # --------------------------------------------------------------------------
-    # Compatibilidade de ordem das features
-    # --------------------------------------------------------------------------
-
-    X_cur_model = (
-        align_features_to_model(
-            champion_model,
-            X_cur,
-        )
-    )
-
     logger.info(
         "Contrato de inferência do Champion "
         f"v{champion_version.version}: "
-        f"{list(X_cur_model.columns)}"
+        f"{get_model_feature_order(champion_model)}"
     )
 
-    # --------------------------------------------------------------------------
-    # Inferência
-    # --------------------------------------------------------------------------
-
-    predictions_fc = (
-        champion_model.predict(
-            X_cur_model
-        )
-    )
-
-    predictions_fc = np.asarray(
-        predictions_fc
-    )
-
-    capacidade_mw = (
-        df_cur_feat[
-            "capacidade_mw"
-        ]
-        .to_numpy()
-    )
-
-    actual_mw = (
-        df_cur_feat[
-            "wind_generation_mw"
-        ]
-        .to_numpy()
-    )
-
-    max_capacity_mw = float(
-        np.max(
-            capacidade_mw
-        )
-    )
-
-    if (
-        not np.isfinite(
-            max_capacity_mw
-        )
-        or max_capacity_mw <= 0
-    ):
-        raise ValueError(
-            "Capacidade máxima inválida para "
-            "o cálculo do nMAE: "
-            f"{max_capacity_mw}."
-        )
-
-    predictions_mw = (
-        predictions_fc
-        * capacidade_mw
-    )
-
-    current_mae_mw = (
-        mean_absolute_error(
-            actual_mw,
-            predictions_mw,
-        )
+    current_evaluation = evaluate_model_on_oot(
+        champion_model,
+        X_cur,
+        df_cur_feat,
     )
 
     current_nmae_pct = (
-        current_mae_mw
-        / max_capacity_mw
-    ) * 100
+        current_evaluation.nmae_pct
+    )
 
     nmae_delta_pp = (
         current_nmae_pct
@@ -891,7 +640,7 @@ def evaluate_performance_drift(
 
 
 # ==============================================================================
-# 8. PIPELINE DE MONITORAMENTO
+# 7. PIPELINE DE MONITORAMENTO
 # ==============================================================================
 
 @flow(

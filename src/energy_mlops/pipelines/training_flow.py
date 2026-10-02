@@ -3,6 +3,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+import mlflow
+import mlflow.sklearn
 import pandas as pd
 import requests
 from loguru import logger
@@ -11,7 +13,13 @@ from mlflow.exceptions import MlflowException
 from prefect import flow, task
 
 from energy_mlops.config import settings
+from energy_mlops.data.feature_utils import (
+    select_model_features,
+)
 from energy_mlops.data.snapshot_validation import audit_gold_snapshot
+from energy_mlops.models.evaluation import (
+    evaluate_model_on_oot,
+)
 from energy_mlops.models.interfaces import (
     ModelOptimizer,
     ModelTrainer,
@@ -935,20 +943,19 @@ def get_registered_model_version(
 )
 def evaluate_and_promote(
     challenger_run_id: str,
-    challenger_mae: float,
+    df_oot: pd.DataFrame,
 ):
     """
-    Compara Challenger e Champion.
+    Compara Champion e Challenger sobre exatamente o mesmo OOT.
 
     Regra de promoção:
-    - promove se o MAE do Challenger melhorar;
+    - promove se o MAE do Challenger melhorar no mesmo OOT;
     - ou, pela regra de parcimônia, se usar menos
-      features e a degradação de nMAE for no máximo
-      NMAE_SIMPLIFICATION_TOLERANCE_PP.
+      features e a degradação de nMAE no mesmo OOT for
+      no máximo NMAE_SIMPLIFICATION_TOLERANCE_PP.
 
-    Métricas atuais usam nomes canônicos.
-    Runs históricas com sufixo anual são aceitas
-    apenas por meio do resolvedor de compatibilidade.
+    Métricas históricas armazenadas nas Runs não são
+    utilizadas para decidir Champion vs Challenger.
     """
 
     client = MlflowClient(
@@ -961,11 +968,6 @@ def evaluate_and_promote(
         challenger_run_id
     )
 
-    challenger_nmae = resolve_metric(
-        challenger_run.data.metrics,
-        "oot_nmae_pct",
-    )
-
     challenger_features = (
         get_required_num_features(
             challenger_run.data.params,
@@ -973,7 +975,16 @@ def evaluate_and_promote(
         )
     )
 
+    challenger_version = (
+        get_registered_model_version(
+            client,
+            MODEL_NAME,
+            challenger_run_id,
+        )
+    )
+
     nmae_diff = None
+    champion_mae = None
 
     try:
         champion_info = (
@@ -993,23 +1004,9 @@ def evaluate_and_promote(
             "FIRST_CHAMPION"
         )
 
-        champion_mae = None
-        champion_nmae = None
-        champion_features = None
-
     else:
         champion_run = client.get_run(
             champion_info.run_id
-        )
-
-        champion_mae = resolve_metric(
-            champion_run.data.metrics,
-            "oot_mae_mw",
-        )
-
-        champion_nmae = resolve_metric(
-            champion_run.data.metrics,
-            "oot_nmae_pct",
         )
 
         champion_features_raw = (
@@ -1024,9 +1021,62 @@ def evaluate_and_promote(
             else None
         )
 
+        # O mesmo OOT já preparado pelo pipeline de dados e
+        # consumido pelo trainer é reutilizado pelos dois modelos.
+        # Cada estimator alinha sua própria ordem de features
+        # durante a avaliação.
+        X_oot = select_model_features(
+            df_oot
+        )
+
+        mlflow.set_tracking_uri(
+            settings.MLFLOW_TRACKING_URI
+        )
+
+        champion_model = (
+            mlflow.sklearn.load_model(
+                f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+            )
+        )
+
+        challenger_model = (
+            mlflow.sklearn.load_model(
+                f"models:/{MODEL_NAME}/{challenger_version}"
+            )
+        )
+
+        champion_evaluation = (
+            evaluate_model_on_oot(
+                champion_model,
+                X_oot,
+                df_oot,
+            )
+        )
+
+        challenger_evaluation = (
+            evaluate_model_on_oot(
+                challenger_model,
+                X_oot,
+                df_oot,
+            )
+        )
+
+        champion_mae = (
+            champion_evaluation.mae_mw
+        )
+        champion_nmae = (
+            champion_evaluation.nmae_pct
+        )
+        challenger_mae = (
+            challenger_evaluation.mae_mw
+        )
+        challenger_nmae = (
+            challenger_evaluation.nmae_pct
+        )
+
         print(
             "🏆 Champion atual "
-            f"(v{champion_info.version}): "
+            f"(v{champion_info.version}) no mesmo OOT: "
             f"MAE={champion_mae:.2f} MW | "
             f"nMAE={champion_nmae:.2f}% | "
             f"Features={champion_features}"
@@ -1034,7 +1084,7 @@ def evaluate_and_promote(
 
         print(
             "⚔️ Challenger "
-            f"(Run {challenger_run_id[:8]}): "
+            f"(v{challenger_version}) no mesmo OOT: "
             f"MAE={challenger_mae:.2f} MW | "
             f"nMAE={challenger_nmae:.2f}% | "
             f"Features={challenger_features}"
@@ -1063,19 +1113,19 @@ def evaluate_and_promote(
 
         if mae_improved:
             promotion_reason = (
-                "MAE_IMPROVED"
+                "MAE_IMPROVED_SAME_OOT"
             )
 
         elif within_tolerance:
             promotion_reason = (
                 "PARSIMONY_WITHIN_"
-                "NMAE_TOLERANCE"
+                "NMAE_TOLERANCE_SAME_OOT"
             )
 
         else:
             if champion_features is None:
                 reason = (
-                    "MAE não melhorou "
+                    "MAE não melhorou no mesmo OOT "
                     f"({challenger_mae:.2f} vs "
                     f"{champion_mae:.2f} MW) e "
                     "o Champion não possui "
@@ -1085,7 +1135,7 @@ def evaluate_and_promote(
 
             elif not fewer_features:
                 reason = (
-                    "MAE não melhorou "
+                    "MAE não melhorou no mesmo OOT "
                     f"({challenger_mae:.2f} vs "
                     f"{champion_mae:.2f} MW) e "
                     "o Challenger não reduz "
@@ -1098,7 +1148,8 @@ def evaluate_and_promote(
                 reason = (
                     "O Challenger usa menos "
                     "features, mas a diferença "
-                    "de nMAE excede a tolerância: "
+                    "de nMAE no mesmo OOT excede "
+                    "a tolerância: "
                     f"{nmae_diff:+.4f} p.p. > "
                     f"{NMAE_SIMPLIFICATION_TOLERANCE_PP:.4f} "
                     "p.p."
@@ -1132,14 +1183,6 @@ def evaluate_and_promote(
     # ==========================================================================
     # PROMOÇÃO
     # ==========================================================================
-
-    challenger_version = (
-        get_registered_model_version(
-            client,
-            MODEL_NAME,
-            challenger_run_id,
-        )
-    )
 
     client.set_registered_model_alias(
         MODEL_NAME,
@@ -1394,7 +1437,7 @@ def continuous_training_pipeline(
 
     (
         challenger_run_id,
-        challenger_mae,
+        _,
     ) = execute_training(
         trainer_func=trainer_algorithm,
         optimization_result=(
@@ -1412,7 +1455,7 @@ def continuous_training_pipeline(
 
     evaluate_and_promote(
         challenger_run_id,
-        challenger_mae,
+        df_test,
     )
 
     logger.info(

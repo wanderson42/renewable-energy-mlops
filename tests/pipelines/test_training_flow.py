@@ -1,5 +1,6 @@
 # tests/pipelines/test_training_flow.py
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -406,7 +407,7 @@ def test_continuous_training_pipeline_orchestration():
     # --------------------------------------------------
     mock_quality_gate.assert_called_once_with(
         "challenger-run-123",
-        456.7,
+        df_test,
     )
 
 
@@ -622,7 +623,7 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
 
     mock_quality_gate.assert_called_once_with(
         "challenger-run-123",
-        456.7,
+        df_test,
     )
 
 
@@ -947,3 +948,306 @@ def test_split_expanding_window_snapshot_remains_compatible():
         legacy_oot,
         generic_oot,
     )
+
+# ==============================================================================
+# QUALITY GATE — SAME OOT
+# ==============================================================================
+
+
+def _make_quality_gate_run(
+    *,
+    num_features: int,
+    historical_mae: float,
+    historical_nmae: float,
+):
+    return SimpleNamespace(
+        data=SimpleNamespace(
+            params={
+                "num_features": str(num_features),
+            },
+            metrics={
+                "oot_mae_mw": historical_mae,
+                "oot_nmae_pct": historical_nmae,
+            },
+        )
+    )
+
+
+def _make_quality_gate_oot() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-09-01 03:00:00",
+                    "2026-09-01 04:00:00",
+                ]
+            ),
+            "temperature_2m": [25.0, 25.5],
+            "wind_speed_100m": [8.0, 9.0],
+            "wind_direction_100m": [180.0, 190.0],
+            "wind_generation_mw": [50.0, 55.0],
+            "capacidade_mw": [100.0, 100.0],
+            "target_fc": [0.50, 0.55],
+        }
+    )
+
+
+def _run_quality_gate_with_same_oot_metrics(
+    *,
+    champion_mae: float,
+    champion_nmae: float,
+    challenger_mae: float,
+    challenger_nmae: float,
+    champion_features: int = 9,
+    challenger_features: int = 9,
+):
+    df_oot = _make_quality_gate_oot()
+
+    challenger_run = _make_quality_gate_run(
+        num_features=challenger_features,
+        # Valores históricos deliberadamente incompatíveis
+        # com a avaliação atual. O gate não deve usá-los.
+        historical_mae=9999.0,
+        historical_nmae=99.0,
+    )
+
+    champion_run = _make_quality_gate_run(
+        num_features=champion_features,
+        historical_mae=1.0,
+        historical_nmae=1.0,
+    )
+
+    fake_client = MagicMock()
+    fake_client.get_run.side_effect = [
+        challenger_run,
+        champion_run,
+    ]
+    fake_client.get_model_version_by_alias.return_value = (
+        SimpleNamespace(
+            run_id="champion-run-10",
+            version="10",
+        )
+    )
+    fake_client.search_model_versions.return_value = [
+        SimpleNamespace(
+            version="20",
+        )
+    ]
+
+    champion_model = MagicMock(name="champion_model")
+    challenger_model = MagicMock(name="challenger_model")
+
+    X_oot = pd.DataFrame(
+        {
+            "feature": [1.0, 2.0],
+        }
+    )
+
+    champion_eval = SimpleNamespace(
+        mae_mw=champion_mae,
+        nmae_pct=champion_nmae,
+    )
+    challenger_eval = SimpleNamespace(
+        mae_mw=challenger_mae,
+        nmae_pct=challenger_nmae,
+    )
+
+    with (
+        patch.object(
+            training_flow,
+            "MlflowClient",
+            return_value=fake_client,
+        ),
+        patch.object(
+            training_flow.mlflow,
+            "set_tracking_uri",
+        ),
+        patch.object(
+            training_flow.mlflow.sklearn,
+            "load_model",
+            side_effect=[
+                champion_model,
+                challenger_model,
+            ],
+        ) as mock_load_model,
+        patch.object(
+            training_flow,
+            "select_model_features",
+            return_value=X_oot,
+        ) as mock_select_features,
+        patch.object(
+            training_flow,
+            "evaluate_model_on_oot",
+            side_effect=[
+                champion_eval,
+                challenger_eval,
+            ],
+        ) as mock_evaluate,
+        patch.object(
+            training_flow.requests,
+            "post",
+            return_value=MagicMock(),
+        ),
+    ):
+        training_flow.evaluate_and_promote.fn(
+            "challenger-run-20",
+            df_oot,
+        )
+
+    return {
+        "client": fake_client,
+        "df_oot": df_oot,
+        "X_oot": X_oot,
+        "champion_model": champion_model,
+        "challenger_model": challenger_model,
+        "mock_load_model": mock_load_model,
+        "mock_select_features": mock_select_features,
+        "mock_evaluate": mock_evaluate,
+    }
+
+
+def test_quality_gate_promotes_challenger_using_same_oot():
+    result = _run_quality_gate_with_same_oot_metrics(
+        champion_mae=900.0,
+        champion_nmae=7.60,
+        challenger_mae=800.0,
+        challenger_nmae=6.80,
+    )
+
+    client = result["client"]
+
+    client.set_registered_model_alias.assert_called_once_with(
+        training_flow.MODEL_NAME,
+        training_flow.MODEL_ALIAS,
+        "20",
+    )
+
+    result["mock_evaluate"].assert_any_call(
+        result["champion_model"],
+        result["X_oot"],
+        result["df_oot"],
+    )
+    result["mock_evaluate"].assert_any_call(
+        result["challenger_model"],
+        result["X_oot"],
+        result["df_oot"],
+    )
+
+    # A métrica histórica do Champion era artificialmente melhor
+    # (1 MW), mas a decisão correta usa 900 vs 800 no mesmo OOT.
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "quality_gate_decision_reason",
+        "MAE_IMPROVED_SAME_OOT",
+    )
+
+
+def test_quality_gate_rejects_worse_challenger_on_same_oot():
+    result = _run_quality_gate_with_same_oot_metrics(
+        champion_mae=800.0,
+        champion_nmae=6.80,
+        challenger_mae=900.0,
+        challenger_nmae=7.60,
+    )
+
+    client = result["client"]
+
+    client.set_registered_model_alias.assert_not_called()
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "quality_gate_status",
+        "REJECTED",
+    )
+
+
+def test_quality_gate_promotes_parsimonious_challenger_within_same_oot_tolerance():
+    result = _run_quality_gate_with_same_oot_metrics(
+        champion_mae=800.0,
+        champion_nmae=7.00,
+        challenger_mae=801.0,
+        challenger_nmae=7.04,
+        champion_features=9,
+        challenger_features=8,
+    )
+
+    client = result["client"]
+
+    client.set_registered_model_alias.assert_called_once()
+    client.set_tag.assert_any_call(
+        "challenger-run-20",
+        "quality_gate_decision_reason",
+        "PARSIMONY_WITHIN_NMAE_TOLERANCE_SAME_OOT",
+    )
+
+
+def test_quality_gate_rejects_parsimonious_challenger_outside_same_oot_tolerance():
+    result = _run_quality_gate_with_same_oot_metrics(
+        champion_mae=800.0,
+        champion_nmae=7.00,
+        challenger_mae=801.0,
+        challenger_nmae=7.06,
+        champion_features=9,
+        challenger_features=8,
+    )
+
+    result["client"].set_registered_model_alias.assert_not_called()
+
+
+def test_quality_gate_promotes_first_champion_without_same_oot_comparison():
+    df_oot = _make_quality_gate_oot()
+
+    challenger_run = _make_quality_gate_run(
+        num_features=9,
+        historical_mae=800.0,
+        historical_nmae=6.8,
+    )
+
+    fake_client = MagicMock()
+    fake_client.get_run.return_value = challenger_run
+    fake_client.search_model_versions.return_value = [
+        SimpleNamespace(version="1")
+    ]
+    fake_client.get_model_version_by_alias.side_effect = (
+        training_flow.MlflowException(
+            "champion ausente"
+        )
+    )
+
+    with (
+        patch.object(
+            training_flow,
+            "MlflowClient",
+            return_value=fake_client,
+        ),
+        patch.object(
+            training_flow,
+            "evaluate_model_on_oot",
+        ) as mock_evaluate,
+        patch.object(
+            training_flow.mlflow.sklearn,
+            "load_model",
+        ) as mock_load_model,
+        patch.object(
+            training_flow.requests,
+            "post",
+            return_value=MagicMock(),
+        ),
+    ):
+        training_flow.evaluate_and_promote.fn(
+            "challenger-run-1",
+            df_oot,
+        )
+
+    mock_evaluate.assert_not_called()
+    mock_load_model.assert_not_called()
+    fake_client.set_registered_model_alias.assert_called_once_with(
+        training_flow.MODEL_NAME,
+        training_flow.MODEL_ALIAS,
+        "1",
+    )
+    fake_client.set_tag.assert_any_call(
+        "challenger-run-1",
+        "quality_gate_decision_reason",
+        "FIRST_CHAMPION",
+    )
+
