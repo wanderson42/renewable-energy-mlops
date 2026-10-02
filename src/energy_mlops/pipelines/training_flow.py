@@ -32,23 +32,53 @@ load_gold_snapshot_task
         ↓
 audit_gold_snapshot_task
         ↓
-split_expanding_window_task
-        ↓
-split_expanding_window_snapshot   ← única regra de split
-        ↓
-   ┌─────────────┐
- TRAIN           OOT
-   ↓              ↓
- audit          audit
-   └──────┬──────┘
-          ↓
-persist_training_datasets_task
-          ↓
-Optuna
-          ↓
-Training
-          ↓
-Quality Gate
+training_window_months
+        │
+        ├── None
+        │     ↓
+        │  Expanding Window
+        │  todo histórico válido
+        │  anterior ao OOT
+        │
+        └── N meses
+              ↓
+           Rolling Window
+           últimos N meses
+           anteriores ao OOT
+        │
+        └──────────────┐
+                       ↓
+          split_training_window_task
+                       ↓
+        split_training_window_snapshot
+                       ↓
+             ┌─────────┴─────────┐
+             ↓                   ↓
+           TRAIN                OOT
+             ↓                   ↓
+   audit_gold_snapshot   audit_gold_snapshot
+             └─────────┬─────────┘
+                       ↓
+        build_training_dataset_labels
+                       ↓
+      persist_training_datasets_task
+                       ↓
+                ┌─────────────┐
+                │ optimizer ? │
+                └──────┬──────┘
+                       │
+              ┌────────┴────────┐
+              ↓                 ↓
+           Optuna             None
+              └────────┬────────┘
+                       ↓
+              execute_training
+                       ↓
+              Challenger MLflow
+                       ↓
+             evaluate_and_promote
+                       ↓
+                 Quality Gate
 """
 
 # ==============================================================================
@@ -263,23 +293,46 @@ def get_local_month_bounds_utc(
     return start_utc, end_utc
 
 
-def split_expanding_window_snapshot(
+def split_training_window_snapshot(
     df: pd.DataFrame,
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Divide um Gold consolidado em treino expansivo
-    e um único mês civil OOT.
+    Divide um snapshot Gold em treino e um único mês civil OOT.
 
-    O mês é definido em America/Sao_Paulo e depois
+    Estratégias suportadas:
+
+    - training_window_months=None:
+      utiliza todo o histórico disponível antes do OOT
+      (expanding window);
+
+    - training_window_months=N:
+      utiliza somente os N meses civis imediatamente
+      anteriores ao início do OOT (rolling window).
+
+    O mês OOT é definido em America/Sao_Paulo e depois
     convertido para UTC.
+
+    Uma rolling window só é aceita quando o snapshot cobre
+    integralmente o período solicitado.
     """
 
     if "date" not in df.columns:
         raise ValueError(
             "Dataset sem coluna obrigatória 'date'."
+        )
+
+    if training_window_months is not None and (
+        isinstance(training_window_months, bool)
+        or not isinstance(training_window_months, int)
+        or training_window_months <= 0
+    ):
+        raise ValueError(
+            "training_window_months deve ser "
+            "um inteiro positivo ou None."
         )
 
     result = df.copy()
@@ -327,14 +380,55 @@ def split_expanding_window_snapshot(
             f"{expected_last_hour}."
         )
 
-    df_train = (
-        result.loc[
+    # --------------------------------------------------
+    # Limite inferior do treino
+    # --------------------------------------------------
+    if training_window_months is None:
+        train_start = None
+
+    else:
+        train_start = (
+            oot_start
+            - pd.DateOffset(
+                months=training_window_months
+            )
+        )
+
+        available_start = result["date"].min()
+
+        if available_start > train_start:
+            raise ValueError(
+                "Snapshot não cobre integralmente "
+                f"a rolling window de "
+                f"{training_window_months} meses. "
+                f"Início necessário: {train_start}. "
+                f"Primeira hora disponível: "
+                f"{available_start}."
+            )
+
+    # --------------------------------------------------
+    # Treino
+    # --------------------------------------------------
+    if train_start is None:
+        train_mask = (
             result["date"] < oot_start
-        ]
+        )
+
+    else:
+        train_mask = (
+            (result["date"] >= train_start)
+            & (result["date"] < oot_start)
+        )
+
+    df_train = (
+        result.loc[train_mask]
         .copy()
         .reset_index(drop=True)
     )
 
+    # --------------------------------------------------
+    # OOT
+    # --------------------------------------------------
     df_test = (
         result.loc[
             (result["date"] >= oot_start)
@@ -363,6 +457,28 @@ def split_expanding_window_snapshot(
         )
 
     return df_train, df_test
+
+
+def split_expanding_window_snapshot(
+    df: pd.DataFrame,
+    *,
+    oot_year: int,
+    oot_month: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Mantém compatibilidade com o contrato histórico
+    da expanding window.
+
+    Equivale a chamar split_training_window_snapshot()
+    com training_window_months=None.
+    """
+
+    return split_training_window_snapshot(
+        df,
+        oot_year=oot_year,
+        oot_month=oot_month,
+        training_window_months=None,
+    )
 
 
 @task(
@@ -463,24 +579,34 @@ def audit_gold_snapshot_task(
 @task(
     name="Dividir Snapshot em Treino e OOT",
 )
-def split_expanding_window_task(
+def split_training_window_task(
     df: pd.DataFrame,
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
 ]:
     """
-    Wrapper Prefect da função pura de split temporal.
+    Wrapper Prefect da regra oficial de split temporal.
+
+    ``training_window_months=None`` representa
+    expanding window.
+
+    Um inteiro positivo representa rolling window
+    com largura fixa em meses.
     """
 
     df_train, df_test = (
-        split_expanding_window_snapshot(
+        split_training_window_snapshot(
             df,
             oot_year=oot_year,
             oot_month=oot_month,
+            training_window_months=(
+                training_window_months
+            ),
         )
     )
 
@@ -491,9 +617,19 @@ def split_expanding_window_task(
         )
     )
 
+    if training_window_months is None:
+        strategy = "expanding"
+    else:
+        strategy = (
+            f"rolling_{training_window_months}m"
+        )
+
     logger.info(
         "✂️ Split temporal concluído | "
+        f"strategy={strategy} | "
         f"train_rows={len(df_train):,} | "
+        f"train_utc=[{df_train['date'].min()}, "
+        f"{df_train['date'].max()}] | "
         f"oot_rows={len(df_test):,} | "
         f"oot_utc=[{oot_start}, {oot_end})"
     )
@@ -506,10 +642,19 @@ def build_training_dataset_labels(
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[str, str]:
     """
     Constrói nomes determinísticos para os artefatos
     de treino e OOT derivados do snapshot auditado.
+
+    Exemplos:
+
+    expanding:
+        train_wind_energy_2024_03_expanding_up_to_2026_09.parquet
+
+    rolling:
+        train_wind_energy_2025_09_rolling_12m_up_to_2026_09.parquet
     """
 
     if df_train.empty:
@@ -534,10 +679,17 @@ def build_training_dataset_labels(
         f"{oot_month:02d}"
     )
 
+    if training_window_months is None:
+        strategy_label = "expanding"
+    else:
+        strategy_label = (
+            f"rolling_{training_window_months}m"
+        )
+
     train_file_label = (
         f"train_wind_energy_"
-        f"{train_start_str}"
-        f"_expanding_up_to_"
+        f"{train_start_str}_"
+        f"{strategy_label}_up_to_"
         f"{cutoff_str}.parquet"
     )
 
@@ -561,6 +713,7 @@ def persist_training_datasets_task(
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[str, str]:
     """
     Persiste treino e OOT somente depois que o
@@ -575,6 +728,9 @@ def persist_training_datasets_task(
         df_train,
         oot_year=oot_year,
         oot_month=oot_month,
+        training_window_months=(
+            training_window_months
+        ),
     )
 
     save_dataset_to_lake_or_local(
@@ -1076,8 +1232,6 @@ OPTIMIZER_REGISTRY = {
 # ==============================================================================
 # FLUXO PRINCIPAL PREFECT — ORQUESTRADOR CT
 # ==============================================================================
-
-
 @flow(
     name=(
         "Pipeline de Treinamento Contínuo "
@@ -1092,6 +1246,7 @@ def continuous_training_pipeline(
     ),
     oot_year: int = DEFAULT_OOT_YEAR,
     oot_month: int = DEFAULT_OOT_MONTH,
+    training_window_months: int | None = None,
 ):
     """
     Orquestrador agnóstico de treinamento contínuo.
@@ -1109,6 +1264,19 @@ def continuous_training_pipeline(
     Antes do split, o snapshot passa pelo Data Quality Gate.
     O mês OOT é interpretado em ``America/Sao_Paulo`` e
     convertido para os limites UTC usados pelo dataset.
+
+    A regra de split temporal é expansiva por padrão, mas
+    pode ser configurada para uma janela rolante de largura fixa
+    em meses.
+
+    A política dessa janela de treinamento também é explícita:
+
+    - ``training_window_months=None``:
+      expanding window;
+
+    - ``training_window_months=N``:
+      rolling window com N meses anteriores ao OOT.
+
     """
 
     trainer_algorithm = (
@@ -1158,13 +1326,17 @@ def continuous_training_pipeline(
         dataset_role="consolidated",
     )
 
+
     (
         df_train,
         df_test,
-    ) = split_expanding_window_task(
+    ) = split_training_window_task(
         df_gold,
         oot_year=oot_year,
         oot_month=oot_month,
+        training_window_months=(
+            training_window_months
+        ),
     )
 
     # Defesa em profundidade: o dataset consolidado já
@@ -1188,6 +1360,9 @@ def continuous_training_pipeline(
         df_test,
         oot_year=oot_year,
         oot_month=oot_month,
+        training_window_months=(
+            training_window_months
+        ),
     )
 
     # ==========================================================================
@@ -1248,3 +1423,64 @@ def continuous_training_pipeline(
 
 if __name__ == "__main__":
     continuous_training_pipeline()
+
+
+'''
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+)
+
+Equivale a:
+
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+    training_window_months=None,
+)
+
+ou seja:
+
+EXPANDING
+todo histórico válido anterior ao mês OOT
+↓
+2026-09 OOT
+
+Uma rolling de 24 meses:
+
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+    training_window_months=24,
+)
+
+produz:
+
+2024-09-01 03:00
+        ↓
+      treino
+        ↓
+2026-09-01 02:00
+
+OOT:
+2026-09-01 03:00
+        ↓
+2026-10-01 02:00
+
+E 12 meses:
+
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+    training_window_months=12,
+)
+
+produz:
+
+2025-09-01 03:00
+        ↓
+      treino
+        ↓
+2026-09-01 02:00
+
+'''

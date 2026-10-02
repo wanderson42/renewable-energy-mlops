@@ -74,6 +74,7 @@ def test_resolve_metric_raises_when_required_metric_missing():
             "oot_nmae_pct",
         )
 
+
 def dummy_trainer(
     df_train,
     df_test,
@@ -123,11 +124,11 @@ def dummy_optimizer(
 
 def test_continuous_training_pipeline_orchestration():
     """
-    Valida a orquestração completa:
+    Valida a orquestração completa com uma rolling window explícita:
 
     Gold explícito
         -> auditoria
-        -> split temporal
+        -> split temporal configurável
         -> auditoria train/OOT
         -> persistência
         -> otimização
@@ -192,7 +193,7 @@ def test_continuous_training_pipeline_orchestration():
         ) as mock_audit,
         patch.object(
             training_flow,
-            "split_expanding_window_task",
+            "split_training_window_task",
             return_value=(
                 df_train,
                 df_test,
@@ -230,6 +231,7 @@ def test_continuous_training_pipeline_orchestration():
             snapshot_path=snapshot_path,
             oot_year=2026,
             oot_month=9,
+            training_window_months=12,
         )
 
     # --------------------------------------------------
@@ -286,9 +288,7 @@ def test_continuous_training_pipeline_orchestration():
     # --------------------------------------------------
     mock_split.assert_called_once()
 
-    split_args = (
-        mock_split.call_args
-    )
+    split_args = mock_split.call_args
 
     assert (
         split_args.args[0]
@@ -305,14 +305,19 @@ def test_continuous_training_pipeline_orchestration():
         == 9
     )
 
+    assert (
+        split_args.kwargs[
+            "training_window_months"
+        ]
+        == 12
+    )
+
     # --------------------------------------------------
     # Persistência
     # --------------------------------------------------
     mock_persist.assert_called_once()
 
-    persist_args = (
-        mock_persist.call_args
-    )
+    persist_args = mock_persist.call_args
 
     assert (
         persist_args.args[0]
@@ -332,6 +337,13 @@ def test_continuous_training_pipeline_orchestration():
     assert (
         persist_args.kwargs["oot_month"]
         == 9
+    )
+
+    assert (
+        persist_args.kwargs[
+            "training_window_months"
+        ]
+        == 12
     )
 
     # --------------------------------------------------
@@ -452,6 +464,9 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
     optimizer_name='none' deve pular completamente
     a otimização, mantendo todas as etapas de
     preparação e auditoria dos dados.
+
+    Sem training_window_months explícito, o contrato
+    padrão deve continuar sendo expanding window.
     """
 
     snapshot_path = (
@@ -502,7 +517,7 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
         ) as mock_audit,
         patch.object(
             training_flow,
-            "split_expanding_window_task",
+            "split_training_window_task",
             return_value=(
                 df_train,
                 df_test,
@@ -549,7 +564,25 @@ def test_continuous_training_pipeline_skips_optimizer_when_none():
 
     mock_split.assert_called_once()
 
+    split_kwargs = (
+        mock_split.call_args.kwargs
+    )
+
+    assert (
+        split_kwargs["training_window_months"]
+        is None
+    )
+
     mock_persist.assert_called_once()
+
+    persist_kwargs = (
+        mock_persist.call_args.kwargs
+    )
+
+    assert (
+        persist_kwargs["training_window_months"]
+        is None
+    )
 
     # Este é o contrato central deste teste.
     mock_optimize.assert_not_called()
@@ -627,11 +660,61 @@ def test_get_local_month_bounds_utc():
     )
 
 
-def test_split_expanding_window_snapshot_uses_local_month():
+@pytest.mark.parametrize(
+    (
+        "training_window_months",
+        "expected_train_start",
+        "expected_train_file",
+    ),
+    [
+        (
+            None,
+            "2024-03-21 00:00:00",
+            (
+                "train_wind_energy_2024_03_"
+                "expanding_up_to_2026_09.parquet"
+            ),
+        ),
+        (
+            24,
+            "2024-09-01 03:00:00",
+            (
+                "train_wind_energy_2024_09_"
+                "rolling_24m_up_to_2026_09.parquet"
+            ),
+        ),
+        (
+            12,
+            "2025-09-01 03:00:00",
+            (
+                "train_wind_energy_2025_09_"
+                "rolling_12m_up_to_2026_09.parquet"
+            ),
+        ),
+    ],
+)
+def test_training_window_split_and_labels_track_strategy(
+    training_window_months,
+    expected_train_start,
+    expected_train_file,
+):
+    """
+    Expanding, rolling 24m e rolling 12m devem
+    compartilhar exatamente o mesmo OOT.
+
+    Somente o limite inferior do treino e o label
+    do artefato de treino podem mudar.
+    """
+
     df = pd.DataFrame(
         {
             "date": pd.to_datetime(
                 [
+                    "2024-03-21 00:00:00",
+                    "2024-09-01 02:00:00",
+                    "2024-09-01 03:00:00",
+                    "2025-09-01 02:00:00",
+                    "2025-09-01 03:00:00",
                     "2026-09-01 01:00:00",
                     "2026-09-01 02:00:00",
                     "2026-09-01 03:00:00",
@@ -639,33 +722,32 @@ def test_split_expanding_window_snapshot_uses_local_month():
                     "2026-10-01 02:00:00",
                 ]
             ),
-            "target_fc": [
-                0.1,
-                0.2,
-                0.3,
-                0.4,
-                0.5,
-            ],
         }
     )
 
     train, oot = (
         training_flow
-        .split_expanding_window_snapshot(
+        .split_training_window_snapshot(
             df,
             oot_year=2026,
             oot_month=9,
+            training_window_months=(
+                training_window_months
+            ),
         )
     )
 
-    assert train["date"].tolist() == [
+    assert train["date"].min() == (
         pd.Timestamp(
-            "2026-09-01 01:00:00"
-        ),
+            expected_train_start
+        )
+    )
+
+    assert train["date"].max() == (
         pd.Timestamp(
             "2026-09-01 02:00:00"
-        ),
-    ]
+        )
+    )
 
     assert oot["date"].min() == (
         pd.Timestamp(
@@ -679,12 +761,43 @@ def test_split_expanding_window_snapshot_uses_local_month():
         )
     )
 
+    assert (
+        train["date"].max()
+        < oot["date"].min()
+    )
 
-def test_split_expanding_window_snapshot_rejects_incomplete_oot():
+    train_file, test_file = (
+        training_flow
+        .build_training_dataset_labels(
+            train,
+            oot_year=2026,
+            oot_month=9,
+            training_window_months=(
+                training_window_months
+            ),
+        )
+    )
+
+    assert (
+        train_file
+        == expected_train_file
+    )
+
+    assert (
+        test_file
+        == (
+            "oot_test_wind_energy_"
+            "2026_09.parquet"
+        )
+    )
+
+
+def test_split_training_window_snapshot_rejects_incomplete_oot():
     df = pd.DataFrame(
         {
             "date": pd.to_datetime(
                 [
+                    "2026-08-01 03:00:00",
                     "2026-09-01 03:00:00",
                     "2026-09-30 02:00:00",
                 ]
@@ -698,28 +811,115 @@ def test_split_expanding_window_snapshot_rejects_incomplete_oot():
     ):
         (
             training_flow
-            .split_expanding_window_snapshot(
+            .split_training_window_snapshot(
                 df,
                 oot_year=2026,
                 oot_month=9,
+                training_window_months=None,
             )
         )
 
 
-def test_split_expanding_window_snapshot_has_no_overlap():
-    dates = pd.date_range(
-        "2026-08-31 23:00:00",
-        "2026-10-01 02:00:00",
-        freq="1h",
-    )
+def test_split_training_window_snapshot_rejects_insufficient_history():
+    """
+    Uma rolling window não pode representar mais
+    histórico do que o snapshot realmente contém.
+    """
 
     df = pd.DataFrame(
         {
-            "date": dates,
+            "date": pd.to_datetime(
+                [
+                    "2025-03-21 00:00:00",
+                    "2026-09-01 02:00:00",
+                    "2026-09-01 03:00:00",
+                    "2026-10-01 02:00:00",
+                ]
+            ),
         }
     )
 
-    train, oot = (
+    with pytest.raises(
+        ValueError,
+        match="não cobre integralmente",
+    ):
+        (
+            training_flow
+            .split_training_window_snapshot(
+                df,
+                oot_year=2026,
+                oot_month=9,
+                training_window_months=24,
+            )
+        )
+
+
+def test_split_training_window_snapshot_rejects_invalid_window():
+    """
+    A largura da rolling window deve ser um inteiro
+    positivo. None é reservado à expanding window.
+    """
+
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2024-03-21 00:00:00",
+                    "2026-09-01 02:00:00",
+                    "2026-09-01 03:00:00",
+                    "2026-10-01 02:00:00",
+                ]
+            ),
+        }
+    )
+
+    for invalid_window in (
+        0,
+        -1,
+        1.5,
+        True,
+    ):
+        with pytest.raises(
+            ValueError,
+            match=(
+                "training_window_months deve ser "
+                "um inteiro positivo ou None"
+            ),
+        ):
+            (
+                training_flow
+                .split_training_window_snapshot(
+                    df,
+                    oot_year=2026,
+                    oot_month=9,
+                    training_window_months=(
+                        invalid_window
+                    ),
+                )
+            )
+
+
+def test_split_expanding_window_snapshot_remains_compatible():
+    """
+    O wrapper histórico de expanding window deve
+    continuar equivalente à nova função genérica
+    com training_window_months=None.
+    """
+
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-08-31 23:00:00",
+                    "2026-09-01 02:00:00",
+                    "2026-09-01 03:00:00",
+                    "2026-10-01 02:00:00",
+                ]
+            ),
+        }
+    )
+
+    legacy_train, legacy_oot = (
         training_flow
         .split_expanding_window_snapshot(
             df,
@@ -728,19 +928,22 @@ def test_split_expanding_window_snapshot_has_no_overlap():
         )
     )
 
-    assert (
-        train["date"].max()
-        < oot["date"].min()
-    )
-
-    assert train["date"].max() == (
-        pd.Timestamp(
-            "2026-09-01 02:00:00"
+    generic_train, generic_oot = (
+        training_flow
+        .split_training_window_snapshot(
+            df,
+            oot_year=2026,
+            oot_month=9,
+            training_window_months=None,
         )
     )
 
-    assert oot["date"].min() == (
-        pd.Timestamp(
-            "2026-09-01 03:00:00"
-        )
+    pd.testing.assert_frame_equal(
+        legacy_train,
+        generic_train,
+    )
+
+    pd.testing.assert_frame_equal(
+        legacy_oot,
+        generic_oot,
     )
