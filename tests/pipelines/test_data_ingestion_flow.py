@@ -286,3 +286,8 @@ def test_extract_weather_task_propagates_extractor_failure():
             start_date="2026-09-01",
             end_date="2026-09-30",
         )
+
+def test_validate_energy_month_boundary_accepts_utc_aware_timestamps():
+    data = make_energy_dataframe(COMPLETE_MONTH_DATES)
+    data["date"] = data["date"].dt.tz_localize("UTC")
+    ingestion_module.validate_energy_month_boundary(data, year=2026, month=9)

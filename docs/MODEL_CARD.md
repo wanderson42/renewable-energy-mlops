@@ -40,11 +40,13 @@ O último Challenger operacional anterior ao experimento v0.2.0 foi a **v12**:
 
 A v12 foi rejeitada pelo Quality Gate e o alias `@champion` permaneceu na v10.
 
-### Estado após o experimento v0.2.0
+### Estado após os experimentos posteriores
 
-O experimento de simplificação realizado em 2026-10-01 **não alterou automaticamente o modelo operacional**.
+Os experimentos de simplificação arquitetural e de comparação de janelas temporais **não alteraram automaticamente o modelo operacional**.
 
-Os resultados da v0.2.0 foram produzidos sobre um novo snapshot temporal congelado e são tratados como evidência experimental. Eles não são comparados diretamente com as métricas históricas da v10 para fins de promoção, pois os períodos OOT são diferentes.
+Os resultados experimentais foram produzidos sobre snapshots e protocolos temporais explicitamente congelados e são tratados como evidência para evolução do sistema.
+
+Eles não substituem automaticamente as métricas históricas do Champion nem implicam promoção sem passar pelo lifecycle operacional e pelo Quality Gate.
 
 ---
 
@@ -100,7 +102,7 @@ A arquitetura operacional atual é um Stacking temporal:
 LightGBM ───┐
 XGBoost ────┼──> OOF causais ──> LinearRegression
 RandomForest┘                    positive=True
-                                  fit_intercept=False
+                                   fit_intercept=False
 ```
 
 A implementação `TemporalStackingRegressor` utiliza `TimeSeriesSplit` para gerar previsões OOF sem leakage futuro. O bloco inicial sem OOF é excluído do treinamento do meta-learner e os modelos base são refitados sobre todo o conjunto de treino ao final.
@@ -120,7 +122,7 @@ WITHOUT_RF
 lgbm + xgboost
 ```
 
-Essa configurabilidade foi introduzida para suportar o experimento de simplificação e não implica mudança automática da arquitetura operacional.
+Essa configurabilidade foi introduzida para suportar experimentos controlados e não implica mudança automática da arquitetura operacional.
 
 ---
 
@@ -136,7 +138,7 @@ Inner TimeSeriesSplit
     └── OOF causal do meta-learner
 ```
 
-No experimento v0.2.0:
+Nos benchmarks controlados recentes:
 
 ```text
 Optuna trials       = 20
@@ -153,6 +155,8 @@ optimization_run_id
 ```
 
 O espaço de busca respeita a arquitetura ativa: hiperparâmetros de estimadores desabilitados não fazem parte do estudo.
+
+A janela de treinamento também pode ser parametrizada independentemente da arquitetura por meio de `training_window_months`.
 
 ---
 
@@ -238,6 +242,137 @@ O experimento não estabelece equivalência estatística entre as arquiteturas e
 
 ---
 
+## 8.1. Experimento de janela temporal de treinamento
+
+Após o experimento de simplificação da arquitetura, foi realizado um segundo benchmark controlado para avaliar se restringir o histórico recente poderia melhorar a generalização temporal.
+
+A arquitetura foi mantida fixa em:
+
+```text
+LGBM + XGBoost + Random Forest
+```
+
+Também permaneceram constantes:
+
+```text
+Features             = 9
+OOT                  = setembro/2026
+Optuna trials        = 20
+Outer CV splits      = 3
+Inner stacking CV    = 5
+```
+
+A única variável experimental foi a janela utilizada na construção do TRAIN:
+
+```text
+Expanding
+Rolling 24 meses
+Rolling 12 meses
+```
+
+O benchmark foi executado em uma rodada própria de otimização e treinamento. Portanto, os valores da configuração Expanding desta seção pertencem a esse benchmark e não substituem os resultados pontuais do experimento de simplificação da seção anterior.
+
+### Janelas avaliadas
+
+```text
+EXPANDING
+rows: 21,425
+range: 2024-03-21 00:00:00 → 2026-09-01 02:00:00
+
+ROLLING 24m
+rows: 17,486
+range: 2024-09-01 03:00:00 → 2026-09-01 02:00:00
+
+ROLLING 12m
+rows: 8,760
+range: 2025-09-01 03:00:00 → 2026-09-01 02:00:00
+```
+
+O OOT permaneceu congelado:
+
+```text
+OOT — setembro/2026
+rows: 720
+range: 2026-09-01 03:00:00 → 2026-10-01 02:00:00
+```
+
+### Resultados
+
+| Janela | TRAIN rows | CV nMAE mean (%) | CV nMAE std (%) | OOT MAE (MW) | OOT nMAE (%) | OOT R² |
+|---|---:|---:|---:|---:|---:|---:|
+| Expanding | 21,425 | 8.6949 | 0.6791 | 787.18 | 6.6788 | 0.8614 |
+| Rolling 24m | 17,486 | 9.1920 | 1.6572 | 937.14 | 7.9511 | 0.8217 |
+| Rolling 12m | 8,760 | 8.1086 | 0.8133 | 889.66 | 7.5483 | 0.8297 |
+
+Para este snapshot, esta arquitetura e este holdout futuro, a **Expanding Window** apresentou o melhor desempenho OOT.
+
+Em relação à Expanding:
+
+```text
+Rolling 24m
+Δ MAE   ≈ +149.95 MW
+Δ nMAE  ≈ +1.27 p.p.
+
+Rolling 12m
+Δ MAE   ≈ +102.48 MW
+Δ nMAE  ≈ +0.87 p.p.
+```
+
+O Rolling 12m apresentou o menor nMAE médio na validação temporal interna, mas essa vantagem não foi reproduzida no OOT.
+
+Esse resultado reforça que desempenho em CV temporal e desempenho em um holdout futuro devem ser analisados separadamente.
+
+A diferença observada não demonstra que a Expanding Window seja universalmente superior. A conclusão permanece restrita ao snapshot, período OOT, arquitetura e protocolo experimental utilizados.
+
+### Sensibilidade do meta-learner à janela
+
+Os coeficientes OOF aprendidos também mudaram entre as janelas:
+
+```text
+Expanding
+LGBM      0.5890
+XGBoost   0.3809
+RF        0.0000
+
+Rolling 24m
+LGBM      0.0769
+XGBoost   0.2916
+RF        0.5692
+
+Rolling 12m
+LGBM      0.5177
+XGBoost   0.4331
+RF        0.0000
+```
+
+A contribuição relativa dos estimadores, portanto, mostrou sensibilidade à janela temporal utilizada.
+
+O Random Forest recebeu coeficiente zero na Expanding e no Rolling 12m, mas assumiu o maior coeficiente no Rolling 24m.
+
+Por essa razão, os três modelos base foram mantidos fixos durante todo o benchmark. Dessa forma, a janela de treinamento permaneceu como a única variável experimental principal.
+
+### Contrato implementado
+
+A política de treinamento passou a aceitar:
+
+```text
+training_window_months=None  -> Expanding
+training_window_months=24    -> Rolling 24m
+training_window_months=12    -> Rolling 12m
+```
+
+A configuração Expanding permanece como referência experimental atual.
+
+Nenhuma alteração automática do Champion foi realizada em decorrência desse benchmark.
+
+A evidência completa está registrada em:
+
+```text
+notebooks/experiments/training_window_comparison_benchmark.ipynb
+```
+
+---
+
 ## 9. Rastreabilidade no MLflow
 
 A arquitetura ativa é registrada como parâmetro/tag no MLflow.
@@ -265,6 +400,8 @@ experiment_family = ensemble_simplification_v0.2.0
 ```
 
 Essa tag é específica do benchmark v0.2.0 e não representa um contrato permanente para futuros treinamentos.
+
+Os experimentos de janela temporal mantêm rastreabilidade própria de suas Runs de otimização e treinamento, preservando a separação entre evidência experimental e estado operacional do Champion.
 
 ---
 
@@ -320,6 +457,8 @@ No experimento v0.2.0, todas as arquiteturas utilizam as mesmas 9 features. Port
 
 Uma futura política de simplificação arquitetural deve ser definida separadamente, somente se houver necessidade real de incorporá-la ao lifecycle operacional.
 
+A escolha da janela temporal também não constitui atualmente um critério automático de promoção. Ela é uma política de construção do dataset de treino que deve continuar sendo avaliada experimentalmente.
+
 ---
 
 ## 13. Dados e escopo
@@ -338,18 +477,21 @@ A capacidade é aplicada como uma função degrau causal: em cada timestamp é u
 
 Datasets reais não são versionados no Git. O Data Lake operacional reside no RustFS e os datasets de treino/OOT são registrados como lineage no MLflow.
 
-O histórico canônico de capacidade da v0.2.0 começa em **2024-03-21**. Experimentos de treinamento que dependam de `capacidade_mw` não devem assumir dados canônicos anteriores a essa data.
+O histórico canônico de capacidade começa em **2024-03-21**. Experimentos de treinamento que dependam de `capacidade_mw` não devem assumir dados canônicos anteriores a essa data.
 
 ---
 
 ## 14. Validação de software
 
-No fechamento do experimento v0.2.0:
+No fechamento da etapa de comparação de janelas e resiliência local:
 
 ```text
-pytest direcionado do trainer: 15 passed
-tox -e py314:                  122 passed
+tox -e py314: 129 passed
+              0 failed
+              2 warnings
 ```
+
+Os warnings conhecidos permanecem associados à compatibilidade interna Evidently/NumPy e não representam falhas da aplicação.
 
 A suíte cobre, entre outros pontos:
 
@@ -358,13 +500,27 @@ A suíte cobre, entre outros pontos:
 - capacidade temporal causal;
 - auditoria do snapshot Gold;
 - split temporal sem overlap;
+- seleção causal da janela de treinamento;
+- compatibilidade entre Expanding e Rolling windows;
+- propagação de `training_window_months` pelo training flow;
 - Temporal Stacking;
 - otimização temporal;
 - arquiteturas configuráveis;
 - nomenclatura dinâmica de Runs e Registered Models;
 - serving;
 - monitoring;
-- Quality Gate.
+- Quality Gate;
+- comportamento de retry do supervisor de port-forward;
+- validação dos argumentos do supervisor;
+- encerramento seguro do processo `kubectl` filho.
+
+Testes destrutivos ou dependentes de uma infraestrutura KinD real não fazem parte da suíte unitária executada pelo Tox.
+
+Reinícios reais de PostgreSQL, RustFS e do control-plane KinD foram utilizados como validação operacional manual e permanecem documentados separadamente em:
+
+```text
+docs/INFRASTRUCTURE.md
+```
 
 ---
 
@@ -372,24 +528,39 @@ A suíte cobre, entre outros pontos:
 
 - Métricas representam janelas temporais específicas e não garantem desempenho futuro.
 - Mudanças de regime, frota, capacidade operacional e clima podem alterar a relevância de dados antigos.
+- A vantagem observada da Expanding Window foi demonstrada em um único OOT congelado e deve ser reavaliada longitudinalmente.
+- O melhor CV temporal interno não necessariamente corresponde ao melhor desempenho em um holdout futuro.
 - A relevância relativa dos estimadores pode mudar quando o snapshot ou a janela temporal muda.
 - Pesos do meta-learner não constituem, isoladamente, evidência suficiente para remover um estimador.
 - As diferenças entre o ensemble completo e `LGBM + XGB` não foram submetidas a um teste formal de equivalência ou não-inferioridade.
+- Os experimentos de janela temporal também não estabelecem superioridade estatística universal de uma política de treinamento.
 - Data Drift não implica necessariamente degradação de performance.
 - A camada de compatibilidade histórica existe para governança entre gerações antigas e não deve virar contrato permanente para novas Runs.
 - O ambiente validado é local/KinD e não representa requisitos de disponibilidade, segurança e compliance de produção energética real.
+- A persistência atualmente validada cobre reinícios de pods, deployments e do container control-plane do KinD, mas não demonstra durabilidade após deleção de PVC, destruição do cluster ou perda do host.
 
 ---
 
 ## 16. Próximos experimentos
 
-Os próximos experimentos devem permanecer simples e responder a perguntas concretas.
+Os próximos experimentos devem permanecer simples e responder a perguntas concretas, isolando sempre que possível uma variável principal por vez.
 
 Prioridades atuais:
 
-- comparar a janela **expansiva** com janelas rolling de **12 e 24 meses**, utilizando o mesmo holdout futuro;
+- repetir o benchmark de janelas com novos meses OOT fechados para avaliar se a vantagem observada da **Expanding Window** permanece estável ao longo do tempo;
+
 - reavaliar janelas mais longas somente quando houver histórico canônico suficiente de `capacidade_mw`;
-- acompanhar a estabilidade de `LGBM + XGB + RF` e `LGBM + XGB` em novos meses OOT;
-- medir custo/tempo de treinamento e inferência apenas se isso se tornar relevante para a decisão entre as duas arquiteturas;
-- considerar no futuro uma identidade de Registered Model orientada ao produto, desacoplada da composição específica dos estimadores;
+
+- acompanhar longitudinalmente a estabilidade de `LGBM + XGB + RF` e `LGBM + XGB` em novos períodos OOT;
+
+- definir uma política explícita de simplificação por número de estimadores somente se houver necessidade de incorporá-la ao lifecycle operacional, mantendo-a separada da regra atual de parcimônia por número de features;
+
+- medir custo de treinamento, latência de inferência e tamanho dos artefatos caso esses fatores passem a ser relevantes para a escolha entre arquiteturas;
+
+- considerar futuramente uma identidade de Registered Model orientada ao produto, desacoplada da composição específica dos estimadores;
+
+- remover a compatibilidade de métricas `*_YYYY` quando nenhum modelo operacional relevante depender mais do contrato histórico;
+
 - manter **Cloud Infrastructure & IaC** como uma fase separada da evolução do modelo.
+
+A estratégia de backup/restore para cenários além da fronteira de persistência atualmente validada — como recriação completa do cluster, deleção de PVC ou perda do host — pertence à evolução da infraestrutura e é acompanhada em `docs/INFRASTRUCTURE.md`, não como experimento de modelagem.

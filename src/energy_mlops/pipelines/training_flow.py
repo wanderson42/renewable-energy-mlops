@@ -3,6 +3,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+import mlflow
+import mlflow.sklearn
 import pandas as pd
 import requests
 from loguru import logger
@@ -11,7 +13,17 @@ from mlflow.exceptions import MlflowException
 from prefect import flow, task
 
 from energy_mlops.config import settings
+from energy_mlops.data.feature_utils import (
+    select_model_features,
+)
 from energy_mlops.data.snapshot_validation import audit_gold_snapshot
+from energy_mlops.models.evaluation import (
+    evaluate_model_on_oot,
+)
+from energy_mlops.models.governance import (
+    build_automatic_governance_tags,
+    persist_governance_tags,
+)
 from energy_mlops.models.interfaces import (
     ModelOptimizer,
     ModelTrainer,
@@ -32,23 +44,53 @@ load_gold_snapshot_task
         ↓
 audit_gold_snapshot_task
         ↓
-split_expanding_window_task
-        ↓
-split_expanding_window_snapshot   ← única regra de split
-        ↓
-   ┌─────────────┐
- TRAIN           OOT
-   ↓              ↓
- audit          audit
-   └──────┬──────┘
-          ↓
-persist_training_datasets_task
-          ↓
-Optuna
-          ↓
-Training
-          ↓
-Quality Gate
+training_window_months
+        │
+        ├── None
+        │     ↓
+        │  Expanding Window
+        │  todo histórico válido
+        │  anterior ao OOT
+        │
+        └── N meses
+              ↓
+           Rolling Window
+           últimos N meses
+           anteriores ao OOT
+        │
+        └──────────────┐
+                       ↓
+          split_training_window_task
+                       ↓
+        split_training_window_snapshot
+                       ↓
+             ┌─────────┴─────────┐
+             ↓                   ↓
+           TRAIN                OOT
+             ↓                   ↓
+   audit_gold_snapshot   audit_gold_snapshot
+             └─────────┬─────────┘
+                       ↓
+        build_training_dataset_labels
+                       ↓
+      persist_training_datasets_task
+                       ↓
+                ┌─────────────┐
+                │ optimizer ? │
+                └──────┬──────┘
+                       │
+              ┌────────┴────────┐
+              ↓                 ↓
+           Optuna             None
+              └────────┬────────┘
+                       ↓
+              execute_training
+                       ↓
+              Challenger MLflow
+                       ↓
+             evaluate_and_promote
+                       ↓
+                 Quality Gate
 """
 
 # ==============================================================================
@@ -263,23 +305,46 @@ def get_local_month_bounds_utc(
     return start_utc, end_utc
 
 
-def split_expanding_window_snapshot(
+def split_training_window_snapshot(
     df: pd.DataFrame,
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Divide um Gold consolidado em treino expansivo
-    e um único mês civil OOT.
+    Divide um snapshot Gold em treino e um único mês civil OOT.
 
-    O mês é definido em America/Sao_Paulo e depois
+    Estratégias suportadas:
+
+    - training_window_months=None:
+      utiliza todo o histórico disponível antes do OOT
+      (expanding window);
+
+    - training_window_months=N:
+      utiliza somente os N meses civis imediatamente
+      anteriores ao início do OOT (rolling window).
+
+    O mês OOT é definido em America/Sao_Paulo e depois
     convertido para UTC.
+
+    Uma rolling window só é aceita quando o snapshot cobre
+    integralmente o período solicitado.
     """
 
     if "date" not in df.columns:
         raise ValueError(
             "Dataset sem coluna obrigatória 'date'."
+        )
+
+    if training_window_months is not None and (
+        isinstance(training_window_months, bool)
+        or not isinstance(training_window_months, int)
+        or training_window_months <= 0
+    ):
+        raise ValueError(
+            "training_window_months deve ser "
+            "um inteiro positivo ou None."
         )
 
     result = df.copy()
@@ -327,14 +392,55 @@ def split_expanding_window_snapshot(
             f"{expected_last_hour}."
         )
 
-    df_train = (
-        result.loc[
+    # --------------------------------------------------
+    # Limite inferior do treino
+    # --------------------------------------------------
+    if training_window_months is None:
+        train_start = None
+
+    else:
+        train_start = (
+            oot_start
+            - pd.DateOffset(
+                months=training_window_months
+            )
+        )
+
+        available_start = result["date"].min()
+
+        if available_start > train_start:
+            raise ValueError(
+                "Snapshot não cobre integralmente "
+                f"a rolling window de "
+                f"{training_window_months} meses. "
+                f"Início necessário: {train_start}. "
+                f"Primeira hora disponível: "
+                f"{available_start}."
+            )
+
+    # --------------------------------------------------
+    # Treino
+    # --------------------------------------------------
+    if train_start is None:
+        train_mask = (
             result["date"] < oot_start
-        ]
+        )
+
+    else:
+        train_mask = (
+            (result["date"] >= train_start)
+            & (result["date"] < oot_start)
+        )
+
+    df_train = (
+        result.loc[train_mask]
         .copy()
         .reset_index(drop=True)
     )
 
+    # --------------------------------------------------
+    # OOT
+    # --------------------------------------------------
     df_test = (
         result.loc[
             (result["date"] >= oot_start)
@@ -363,6 +469,28 @@ def split_expanding_window_snapshot(
         )
 
     return df_train, df_test
+
+
+def split_expanding_window_snapshot(
+    df: pd.DataFrame,
+    *,
+    oot_year: int,
+    oot_month: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Mantém compatibilidade com o contrato histórico
+    da expanding window.
+
+    Equivale a chamar split_training_window_snapshot()
+    com training_window_months=None.
+    """
+
+    return split_training_window_snapshot(
+        df,
+        oot_year=oot_year,
+        oot_month=oot_month,
+        training_window_months=None,
+    )
 
 
 @task(
@@ -463,24 +591,34 @@ def audit_gold_snapshot_task(
 @task(
     name="Dividir Snapshot em Treino e OOT",
 )
-def split_expanding_window_task(
+def split_training_window_task(
     df: pd.DataFrame,
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
 ]:
     """
-    Wrapper Prefect da função pura de split temporal.
+    Wrapper Prefect da regra oficial de split temporal.
+
+    ``training_window_months=None`` representa
+    expanding window.
+
+    Um inteiro positivo representa rolling window
+    com largura fixa em meses.
     """
 
     df_train, df_test = (
-        split_expanding_window_snapshot(
+        split_training_window_snapshot(
             df,
             oot_year=oot_year,
             oot_month=oot_month,
+            training_window_months=(
+                training_window_months
+            ),
         )
     )
 
@@ -491,9 +629,19 @@ def split_expanding_window_task(
         )
     )
 
+    if training_window_months is None:
+        strategy = "expanding"
+    else:
+        strategy = (
+            f"rolling_{training_window_months}m"
+        )
+
     logger.info(
         "✂️ Split temporal concluído | "
+        f"strategy={strategy} | "
         f"train_rows={len(df_train):,} | "
+        f"train_utc=[{df_train['date'].min()}, "
+        f"{df_train['date'].max()}] | "
         f"oot_rows={len(df_test):,} | "
         f"oot_utc=[{oot_start}, {oot_end})"
     )
@@ -506,10 +654,19 @@ def build_training_dataset_labels(
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[str, str]:
     """
     Constrói nomes determinísticos para os artefatos
     de treino e OOT derivados do snapshot auditado.
+
+    Exemplos:
+
+    expanding:
+        train_wind_energy_2024_03_expanding_up_to_2026_09.parquet
+
+    rolling:
+        train_wind_energy_2025_09_rolling_12m_up_to_2026_09.parquet
     """
 
     if df_train.empty:
@@ -534,10 +691,17 @@ def build_training_dataset_labels(
         f"{oot_month:02d}"
     )
 
+    if training_window_months is None:
+        strategy_label = "expanding"
+    else:
+        strategy_label = (
+            f"rolling_{training_window_months}m"
+        )
+
     train_file_label = (
         f"train_wind_energy_"
-        f"{train_start_str}"
-        f"_expanding_up_to_"
+        f"{train_start_str}_"
+        f"{strategy_label}_up_to_"
         f"{cutoff_str}.parquet"
     )
 
@@ -561,6 +725,7 @@ def persist_training_datasets_task(
     *,
     oot_year: int,
     oot_month: int,
+    training_window_months: int | None = None,
 ) -> tuple[str, str]:
     """
     Persiste treino e OOT somente depois que o
@@ -575,6 +740,9 @@ def persist_training_datasets_task(
         df_train,
         oot_year=oot_year,
         oot_month=oot_month,
+        training_window_months=(
+            training_window_months
+        ),
     )
 
     save_dataset_to_lake_or_local(
@@ -779,20 +947,21 @@ def get_registered_model_version(
 )
 def evaluate_and_promote(
     challenger_run_id: str,
-    challenger_mae: float,
+    df_oot: pd.DataFrame,
+    *,
+    oot_dataset: str | None = None,
 ):
     """
-    Compara Challenger e Champion.
+    Compara Champion e Challenger sobre exatamente o mesmo OOT.
 
     Regra de promoção:
-    - promove se o MAE do Challenger melhorar;
+    - promove se o MAE do Challenger melhorar no mesmo OOT;
     - ou, pela regra de parcimônia, se usar menos
-      features e a degradação de nMAE for no máximo
-      NMAE_SIMPLIFICATION_TOLERANCE_PP.
+      features e a degradação de nMAE no mesmo OOT for
+      no máximo NMAE_SIMPLIFICATION_TOLERANCE_PP.
 
-    Métricas atuais usam nomes canônicos.
-    Runs históricas com sufixo anual são aceitas
-    apenas por meio do resolvedor de compatibilidade.
+    Métricas históricas armazenadas nas Runs não são
+    utilizadas para decidir Champion vs Challenger.
     """
 
     client = MlflowClient(
@@ -805,11 +974,6 @@ def evaluate_and_promote(
         challenger_run_id
     )
 
-    challenger_nmae = resolve_metric(
-        challenger_run.data.metrics,
-        "oot_nmae_pct",
-    )
-
     challenger_features = (
         get_required_num_features(
             challenger_run.data.params,
@@ -817,7 +981,22 @@ def evaluate_and_promote(
         )
     )
 
+    challenger_version = (
+        get_registered_model_version(
+            client,
+            MODEL_NAME,
+            challenger_run_id,
+        )
+    )
+
     nmae_diff = None
+    champion_mae = None
+    champion_nmae = None
+    challenger_mae = None
+    challenger_nmae = None
+    champion_features = None
+    previous_champion_version = None
+    previous_champion_run_id = None
 
     try:
         champion_info = (
@@ -836,24 +1015,19 @@ def evaluate_and_promote(
         promotion_reason = (
             "FIRST_CHAMPION"
         )
-
-        champion_mae = None
-        champion_nmae = None
-        champion_features = None
+        automatic_decision = "PROMOTE"
+        decision_reason = promotion_reason
 
     else:
-        champion_run = client.get_run(
+        previous_champion_version = str(
+            champion_info.version
+        )
+        previous_champion_run_id = (
             champion_info.run_id
         )
 
-        champion_mae = resolve_metric(
-            champion_run.data.metrics,
-            "oot_mae_mw",
-        )
-
-        champion_nmae = resolve_metric(
-            champion_run.data.metrics,
-            "oot_nmae_pct",
+        champion_run = client.get_run(
+            champion_info.run_id
         )
 
         champion_features_raw = (
@@ -868,9 +1042,62 @@ def evaluate_and_promote(
             else None
         )
 
+        # O mesmo OOT já preparado pelo pipeline de dados e
+        # consumido pelo trainer é reutilizado pelos dois modelos.
+        # Cada estimator alinha sua própria ordem de features
+        # durante a avaliação.
+        X_oot = select_model_features(
+            df_oot
+        )
+
+        mlflow.set_tracking_uri(
+            settings.MLFLOW_TRACKING_URI
+        )
+
+        champion_model = (
+            mlflow.sklearn.load_model(
+                f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+            )
+        )
+
+        challenger_model = (
+            mlflow.sklearn.load_model(
+                f"models:/{MODEL_NAME}/{challenger_version}"
+            )
+        )
+
+        champion_evaluation = (
+            evaluate_model_on_oot(
+                champion_model,
+                X_oot,
+                df_oot,
+            )
+        )
+
+        challenger_evaluation = (
+            evaluate_model_on_oot(
+                challenger_model,
+                X_oot,
+                df_oot,
+            )
+        )
+
+        champion_mae = (
+            champion_evaluation.mae_mw
+        )
+        champion_nmae = (
+            champion_evaluation.nmae_pct
+        )
+        challenger_mae = (
+            challenger_evaluation.mae_mw
+        )
+        challenger_nmae = (
+            challenger_evaluation.nmae_pct
+        )
+
         print(
             "🏆 Champion atual "
-            f"(v{champion_info.version}): "
+            f"(v{champion_info.version}) no mesmo OOT: "
             f"MAE={champion_mae:.2f} MW | "
             f"nMAE={champion_nmae:.2f}% | "
             f"Features={champion_features}"
@@ -878,7 +1105,7 @@ def evaluate_and_promote(
 
         print(
             "⚔️ Challenger "
-            f"(Run {challenger_run_id[:8]}): "
+            f"(v{challenger_version}) no mesmo OOT: "
             f"MAE={challenger_mae:.2f} MW | "
             f"nMAE={challenger_nmae:.2f}% | "
             f"Features={challenger_features}"
@@ -907,19 +1134,23 @@ def evaluate_and_promote(
 
         if mae_improved:
             promotion_reason = (
-                "MAE_IMPROVED"
+                "MAE_IMPROVED_SAME_OOT"
             )
+            automatic_decision = "PROMOTE"
+            decision_reason = promotion_reason
 
         elif within_tolerance:
             promotion_reason = (
                 "PARSIMONY_WITHIN_"
-                "NMAE_TOLERANCE"
+                "NMAE_TOLERANCE_SAME_OOT"
             )
+            automatic_decision = "PROMOTE"
+            decision_reason = promotion_reason
 
         else:
             if champion_features is None:
                 reason = (
-                    "MAE não melhorou "
+                    "MAE não melhorou no mesmo OOT "
                     f"({challenger_mae:.2f} vs "
                     f"{champion_mae:.2f} MW) e "
                     "o Champion não possui "
@@ -929,7 +1160,7 @@ def evaluate_and_promote(
 
             elif not fewer_features:
                 reason = (
-                    "MAE não melhorou "
+                    "MAE não melhorou no mesmo OOT "
                     f"({challenger_mae:.2f} vs "
                     f"{champion_mae:.2f} MW) e "
                     "o Challenger não reduz "
@@ -942,11 +1173,53 @@ def evaluate_and_promote(
                 reason = (
                     "O Challenger usa menos "
                     "features, mas a diferença "
-                    "de nMAE excede a tolerância: "
+                    "de nMAE no mesmo OOT excede "
+                    "a tolerância: "
                     f"{nmae_diff:+.4f} p.p. > "
                     f"{NMAE_SIMPLIFICATION_TOLERANCE_PP:.4f} "
                     "p.p."
                 )
+
+            automatic_decision = "REJECT"
+            decision_reason = reason
+
+            governance_tags = (
+                build_automatic_governance_tags(
+                    df_oot=df_oot,
+                    oot_dataset=oot_dataset,
+                    model_name=MODEL_NAME,
+                    model_alias=MODEL_ALIAS,
+                    automatic_decision=automatic_decision,
+                    decision_reason=decision_reason,
+                    previous_champion_version=(
+                        previous_champion_version
+                    ),
+                    previous_champion_run_id=(
+                        previous_champion_run_id
+                    ),
+                    challenger_version=str(
+                        challenger_version
+                    ),
+                    challenger_run_id=challenger_run_id,
+                    champion_num_features=champion_features,
+                    challenger_num_features=(
+                        challenger_features
+                    ),
+                    champion_mae_mw=champion_mae,
+                    champion_nmae_pct=champion_nmae,
+                    challenger_mae_mw=challenger_mae,
+                    challenger_nmae_pct=challenger_nmae,
+                    nmae_simplification_tolerance_pp=(
+                        NMAE_SIMPLIFICATION_TOLERANCE_PP
+                    ),
+                )
+            )
+
+            persist_governance_tags(
+                client,
+                run_id=challenger_run_id,
+                tags=governance_tags,
+            )
 
             logger.warning(
                 "❌ Challenger rejeitado: "
@@ -976,14 +1249,6 @@ def evaluate_and_promote(
     # ==========================================================================
     # PROMOÇÃO
     # ==========================================================================
-
-    challenger_version = (
-        get_registered_model_version(
-            client,
-            MODEL_NAME,
-            challenger_run_id,
-        )
-    )
 
     client.set_registered_model_alias(
         MODEL_NAME,
@@ -1021,6 +1286,44 @@ def evaluate_and_promote(
             if nmae_diff is None
             else str(nmae_diff)
         ),
+    )
+
+    governance_tags = (
+        build_automatic_governance_tags(
+            df_oot=df_oot,
+            oot_dataset=oot_dataset,
+            model_name=MODEL_NAME,
+            model_alias=MODEL_ALIAS,
+            automatic_decision=automatic_decision,
+            decision_reason=decision_reason,
+            previous_champion_version=(
+                previous_champion_version
+            ),
+            previous_champion_run_id=(
+                previous_champion_run_id
+            ),
+            challenger_version=str(
+                challenger_version
+            ),
+            challenger_run_id=challenger_run_id,
+            champion_num_features=champion_features,
+            challenger_num_features=(
+                challenger_features
+            ),
+            champion_mae_mw=champion_mae,
+            champion_nmae_pct=champion_nmae,
+            challenger_mae_mw=challenger_mae,
+            challenger_nmae_pct=challenger_nmae,
+            nmae_simplification_tolerance_pp=(
+                NMAE_SIMPLIFICATION_TOLERANCE_PP
+            ),
+        )
+    )
+
+    persist_governance_tags(
+        client,
+        run_id=challenger_run_id,
+        tags=governance_tags,
     )
 
     logger.info(
@@ -1076,8 +1379,6 @@ OPTIMIZER_REGISTRY = {
 # ==============================================================================
 # FLUXO PRINCIPAL PREFECT — ORQUESTRADOR CT
 # ==============================================================================
-
-
 @flow(
     name=(
         "Pipeline de Treinamento Contínuo "
@@ -1092,6 +1393,7 @@ def continuous_training_pipeline(
     ),
     oot_year: int = DEFAULT_OOT_YEAR,
     oot_month: int = DEFAULT_OOT_MONTH,
+    training_window_months: int | None = None,
 ):
     """
     Orquestrador agnóstico de treinamento contínuo.
@@ -1109,6 +1411,19 @@ def continuous_training_pipeline(
     Antes do split, o snapshot passa pelo Data Quality Gate.
     O mês OOT é interpretado em ``America/Sao_Paulo`` e
     convertido para os limites UTC usados pelo dataset.
+
+    A regra de split temporal é expansiva por padrão, mas
+    pode ser configurada para uma janela rolante de largura fixa
+    em meses.
+
+    A política dessa janela de treinamento também é explícita:
+
+    - ``training_window_months=None``:
+      expanding window;
+
+    - ``training_window_months=N``:
+      rolling window com N meses anteriores ao OOT.
+
     """
 
     trainer_algorithm = (
@@ -1158,13 +1473,17 @@ def continuous_training_pipeline(
         dataset_role="consolidated",
     )
 
+
     (
         df_train,
         df_test,
-    ) = split_expanding_window_task(
+    ) = split_training_window_task(
         df_gold,
         oot_year=oot_year,
         oot_month=oot_month,
+        training_window_months=(
+            training_window_months
+        ),
     )
 
     # Defesa em profundidade: o dataset consolidado já
@@ -1188,6 +1507,9 @@ def continuous_training_pipeline(
         df_test,
         oot_year=oot_year,
         oot_month=oot_month,
+        training_window_months=(
+            training_window_months
+        ),
     )
 
     # ==========================================================================
@@ -1219,7 +1541,7 @@ def continuous_training_pipeline(
 
     (
         challenger_run_id,
-        challenger_mae,
+        _,
     ) = execute_training(
         trainer_func=trainer_algorithm,
         optimization_result=(
@@ -1237,7 +1559,8 @@ def continuous_training_pipeline(
 
     evaluate_and_promote(
         challenger_run_id,
-        challenger_mae,
+        df_test,
+        oot_dataset=test_file,
     )
 
     logger.info(
@@ -1248,3 +1571,64 @@ def continuous_training_pipeline(
 
 if __name__ == "__main__":
     continuous_training_pipeline()
+
+
+'''
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+)
+
+Equivale a:
+
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+    training_window_months=None,
+)
+
+ou seja:
+
+EXPANDING
+todo histórico válido anterior ao mês OOT
+↓
+2026-09 OOT
+
+Uma rolling de 24 meses:
+
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+    training_window_months=24,
+)
+
+produz:
+
+2024-09-01 03:00
+        ↓
+      treino
+        ↓
+2026-09-01 02:00
+
+OOT:
+2026-09-01 03:00
+        ↓
+2026-10-01 02:00
+
+E 12 meses:
+
+continuous_training_pipeline(
+    oot_year=2026,
+    oot_month=9,
+    training_window_months=12,
+)
+
+produz:
+
+2025-09-01 03:00
+        ↓
+      treino
+        ↓
+2026-09-01 02:00
+
+'''

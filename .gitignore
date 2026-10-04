@@ -3,16 +3,13 @@
 lista_ordenada_de_comandos_bash.txt
 
 # Dados e Artefatos Locais
-#data/
+# data/
 shap_importance.csv
 .agents/
-*.log
 
 # Logs
-.ports.log
 *.log
-.prefect.log
-.dashboard.log
+.ports/
 
 # Python / Compilados
 __pycache__/
@@ -23,28 +20,27 @@ __pycache__/
 .vscode/
 .idea/
 
-# Jupyter Notebooks
+# Jupyter Notebooks e imagens geradas
 .ipynb_checkpoints/
 *.ipynb
 *.png
 *.jpg
 
-# EXCEÇÃO: Permitir o relatório e as imagens do portfólio
-!notebooks/*.ipynb
-!notebooks/*.png
-!notebooks/*.jpg
+# EXCEÇÃO: notebooks e imagens oficiais do portfólio
+!notebooks/**/*.ipynb
+!notebooks/**/*.png
+!notebooks/**/*.jpg
 
-# Bancos de Dados locais e Caches (Prefect, pytest, etc)
+# Bancos de Dados locais e Caches
 .cache.sqlite
 .pytest_cache/
 .ruff_cache/
 
-# Dados Locais (evita subir arquivos .parquet pesados para o GitHub)
+# Dados Locais
 # O Data Lake oficial agora é o RustFS no Kubernetes
 data/*.parquet
 data/*.csv
-
-helm/values_secrets.yaml
+data/**/*.parquet
 
 # Secrets locais do Helm
 helm/values_secrets.yaml
@@ -55,6 +51,3 @@ mlflow.db
 # Evidências locais de validação
 validation_*/
 pytest_full_suite.txt
-
-# Local datasets / Data Lake fallbacks
-data/**/*.parquet

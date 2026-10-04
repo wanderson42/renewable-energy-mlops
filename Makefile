@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 .PHONY: ports stop-ports status validate
-
+PORT_LOG_DIR := .ports
 
 # ==============================================================================
 # CONFIGURAÇÃO LOCAL
@@ -21,15 +21,33 @@ K8S_DEPLOYMENTS := energy-api mlflow postgres rustfs
 # SERVIÇOS LOCAIS / PORT-FORWARD
 # ==============================================================================
 
-ports:
+ports: stop-ports
 	@echo "🚀 Iniciando redirecionamento de portas e serviços em segundo plano..."
-	@nohup kubectl port-forward svc/rustfs 9000:9000 > .ports.log 2>&1 &
-	@nohup kubectl port-forward svc/rustfs 9001:9001 >> .ports.log 2>&1 &
-	@nohup kubectl port-forward svc/mlflow 5000:5000 >> .ports.log 2>&1 &
-	@nohup kubectl port-forward svc/energy-api 8000:8000 >> .ports.log 2>&1 &
-	@nohup poetry run prefect server start > prefect.log 2>&1 &
-	@nohup poetry run streamlit run src/energy_mlops/app/app.py > dashboard.log 2>&1 &
+	@mkdir -p $(PORT_LOG_DIR)
+	@rm -f $(PORT_LOG_DIR)/*.log
+
+	@nohup bash scripts/port-forward-supervisor.sh \
+		rustfs-api rustfs 9000:9000 \
+		> $(PORT_LOG_DIR)/rustfs-api.log 2>&1 &
+
+	@nohup kubectl port-forward svc/rustfs 9001:9001 \
+		> $(PORT_LOG_DIR)/rustfs-console.log 2>&1 &
+
+	@nohup bash scripts/port-forward-supervisor.sh \
+		mlflow mlflow 5000:5000 \
+		> $(PORT_LOG_DIR)/mlflow.log 2>&1 &
+
+	@nohup kubectl port-forward svc/energy-api 8000:8000 \
+		> $(PORT_LOG_DIR)/energy-api.log 2>&1 &
+
+	@nohup poetry run prefect server start \
+		> prefect.log 2>&1 &
+
+	@nohup poetry run streamlit run src/energy_mlops/app/app.py \
+		> dashboard.log 2>&1 &
+
 	@sleep 3
+
 	@echo "✅ Serviços liberados:"
 	@echo "   - RustFS API:     $(RUSTFS_API_URL)"
 	@echo "   - RustFS Console: $(RUSTFS_CONSOLE_URL)"
@@ -37,14 +55,26 @@ ports:
 	@echo "   - FastAPI API:    $(API_URL)"
 	@echo "   - Prefect UI:     $(PREFECT_URL)"
 	@echo "   - Dashboard UI:   $(DASHBOARD_URL)"
-	@echo "   (Logs: .ports.log, prefect.log e dashboard.log)"
+	@echo "   - Logs de portas: $(PORT_LOG_DIR)/"
 
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."
-	@-pkill -f "kubectl port-forward" || echo "Nenhum port-forward ativo."
-	@-pkill -f "prefect server start" || echo "Nenhum Prefect ativo."
-	@-pkill -f "streamlit run" || echo "Nenhum Streamlit ativo."
+
+	@-pkill -f "[p]ort-forward-supervisor.sh" \
+		|| echo "Nenhum supervisor de port-forward ativo."
+
+	@-pkill -f "[k]ubectl port-forward" \
+		|| echo "Nenhum port-forward ativo."
+
+	@-pkill -f "[p]refect server start" \
+		|| echo "Nenhum Prefect ativo."
+
+	@-pkill -f "[s]treamlit run" \
+		|| echo "Nenhum Streamlit ativo."
+
+	@sleep 1
+
 	@echo "✅ Portas e serviços fechados."
 
 

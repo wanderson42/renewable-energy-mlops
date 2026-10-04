@@ -4,7 +4,7 @@
 [![CI](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml/badge.svg)](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Poetry](https://img.shields.io/badge/Poetry-2.x-60A5FA?logo=poetry&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-122%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-129%20passed-brightgreen)
 [![License](https://img.shields.io/github/license/wanderson42/renewable-energy-mlops)](LICENSE)
 
 Sistema MLOps end-to-end para **previsão horária Day-Ahead de geração eólica na Bahia**, cobrindo ingestão de dados, contratos de features, validação temporal, otimização de hiperparâmetros, experiment tracking, Model Registry, explicabilidade, monitoramento de drift, Continuous Training, model serving e operação local em Kubernetes.
@@ -55,7 +55,7 @@ O projeto separa explicitamente:
 
 Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nova imagem da API não implica retreinar o modelo.
 
-## Estado atual — 2026-10-01
+## Estado atual — 2026-10-02
 
 | Item | Estado |
 |---|---|
@@ -69,7 +69,7 @@ Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nov
 | Último Challenger | **v12 — rejeitado pelo Quality Gate** |
 | Data Drift observado | **7/9 features (77.8%)** |
 | Threshold de Data Drift | **50%** |
-| Testes automatizados | **122 passed / 0 failed** |
+| Testes automatizados | **129 passed / 0 failed** |
 | Warnings conhecidos | **2 — Evidently/NumPy, não bloqueantes** |
 
 O Challenger v12 apresentou `837.85 MW` de MAE OOT, `7.11%` de nMAE e `R² = 0.8438`. Como não melhorou o MAE e não reduziu o número de features, o alias `@champion` permaneceu na v10.
@@ -87,6 +87,41 @@ O experimento v0.2.0 avaliou três arquiteturas sobre **o mesmo snapshot tempora
 A hipótese original de remover o XGBoost não foi sustentada no novo snapshot. `LGBM + XGB` foi o melhor candidato reduzido, mas o ensemble completo manteve os melhores valores pontuais no OOT.
 
 O benchmark é tratado como **evidência experimental** e não promoveu automaticamente nenhum modelo. O Champion operacional permanece na v10, pois suas métricas históricas pertencem a outro período OOT e não são comparadas diretamente com o benchmark v0.2.0 para fins de promoção.
+
+
+### Experimento de janela temporal de treinamento
+
+Após o benchmark de simplificação, um segundo experimento manteve fixa a arquitetura
+`LGBM + XGB + RF` e alterou apenas a quantidade de histórico disponível para o TRAIN.
+
+Foram comparadas três políticas:
+
+```text
+Expanding
+Rolling 24 meses
+Rolling 12 meses
+```
+
+O contrato experimental permaneceu fixo em 9 features, OOT de setembro/2026,
+20 trials Optuna, 3 splits externos e 5 splits internos do Stacking.
+
+| Janela | TRAIN rows | CV nMAE mean (%) | CV nMAE std (%) | OOT MAE (MW) | OOT nMAE (%) | OOT R² |
+|---|---:|---:|---:|---:|---:|---:|
+| Expanding | 21,425 | 8.6949 | 0.6791 | **787.18** | **6.6788** | **0.8614** |
+| Rolling 24m | 17,486 | 9.1920 | 1.6572 | 937.14 | 7.9511 | 0.8217 |
+| Rolling 12m | 8,760 | **8.1086** | 0.8133 | 889.66 | 7.5483 | 0.8297 |
+
+Para este snapshot e este holdout futuro, a **Expanding Window** apresentou o melhor
+desempenho OOT. O Rolling 12m obteve o menor nMAE médio na validação interna, mas essa
+vantagem não se transferiu para o OOT, reforçando a necessidade de avaliar CV temporal
+e holdout futuro separadamente.
+
+A conclusão é contextual: o resultado não demonstra superioridade universal da
+Expanding Window. A política passou a ser parametrizável por `training_window_months`
+para permitir repetição do benchmark em novos períodos OOT.
+
+A evidência detalhada está em
+[`notebooks/experiments/training_window_comparison_benchmark.ipynb`](notebooks/experiments/training_window_comparison_benchmark.ipynb).
 
 
 ## Dashboard operacional
@@ -184,6 +219,48 @@ A promoção de Challenger para Champion só ocorre após o **Quality Gate**. Na
 
 A regra atual de parcimônia considera **redução do número de features**, não redução do número de estimadores base. Por isso, ela não foi usada para decidir automaticamente entre as arquiteturas do experimento v0.2.0, que compartilham o mesmo contrato de 9 features.
 
+
+A política de construção do TRAIN também é explícita:
+
+```text
+training_window_months=None  -> Expanding
+training_window_months=24    -> Rolling 24m
+training_window_months=12    -> Rolling 12m
+```
+
+A escolha da janela é uma configuração experimental/de treinamento e não constitui,
+por si só, um critério de promoção no Quality Gate.
+
+## Persistência e resiliência local
+
+O MLflow separa estado persistente em dois backends:
+
+```text
+MLflow metadata  -> PostgreSQL -> postgres-pvc
+MLflow artifacts -> RustFS     -> rustfs-pvc
+```
+
+A persistência foi validada de forma controlada após restart individual dos deployments
+de PostgreSQL e RustFS e também após restart do container `energy-mlops-control-plane`.
+A mesma Run canary manteve parâmetros, métricas e artifact acessíveis após a recuperação.
+
+A investigação também mostrou que a falha observada durante um benchmark longo não era
+perda de dados, mas indisponibilidade do `kubectl port-forward`. Por isso, os dois
+endpoints críticos ao tracking e aos artifacts locais passaram a usar um supervisor
+com retry automático:
+
+```text
+localhost:5000 -> MLflow
+localhost:9000 -> RustFS API
+```
+
+O escopo validado cobre reinícios de pods, deployments e do container control-plane do
+KinD. Ele **não** implica durabilidade após deleção de PVC, `kind delete cluster`,
+perda do disco do host ou perda da máquina.
+
+A arquitetura, a configuração e a matriz completa de validação estão em
+[`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md).
+
 ## Stack técnico
 
 | Camada | Tecnologias |
@@ -211,63 +288,77 @@ A regra atual de parcimônia considera **redução do número de features**, nã
 
 ```text
 renewable-energy-mlops/
-├── .github/workflows/ci_cd.yaml
+├── .github/
+│   └── workflows/
+│       └── ci_cd.yaml                         # CI: testes, build e publicação da imagem no GHCR
 ├── docs/
-│   ├── MODEL_CARD.md
-│   └── OPERATIONS.md
-├── helm/
-│   ├── Chart.yaml
-│   ├── values.yaml
+│   ├── INFRASTRUCTURE.md                     # Arquitetura local, persistência, configuração e resiliência
+│   ├── MODEL_CARD.md                         # Contrato, métricas, limitações e governança do modelo
+│   └── OPERATIONS.md                         # Runbook operacional: monitoring, CT, validação e rollout
+├── helm/                                     # Infraestrutura Kubernetes local sobre KinD
+│   ├── Chart.yaml                            # Metadados do Helm Chart
+│   ├── values.yaml                           # Configuração pública/default dos serviços
 │   └── templates/
-│       ├── api.yaml
-│       ├── mlflow.yaml
-│       ├── postgres.yaml
-│       └── rustfs.yaml
+│       ├── api.yaml                          # Deployment e Service do Model Serving FastAPI
+│       ├── mlflow.yaml                       # MLflow Tracking Server e artifact store
+│       ├── postgres.yaml                     # PostgreSQL e PVC do metadata store
+│       └── rustfs.yaml                       # RustFS S3-compatible e PVC do Data Lake
 ├── notebooks/
 │   ├── experiments/
-│   │   └── ensemble_simplification_v0_2_0.ipynb
-│   ├── extract_test.png
-│   ├── renewable-energy-mlops.ipynb
-│   ├── streamlit_day_ahead.png
-│   └── streamlit_monitoring.png
-├── src/energy_mlops/
-│   ├── app/app.py
-│   ├── data/
-│   │   ├── build_features.py
-│   │   ├── extract_energy.py
-│   │   ├── extract_weather.py
-│   │   ├── feature_utils.py
-│   │   └── schema.py
-│   ├── models/
-│   │   ├── interfaces.py
-│   │   ├── optimize_stacking_ensemble.py
-│   │   ├── temporal_stacking.py
-│   │   ├── train_examples.py
-│   │   └── train_stacking_ensemble.py
-│   ├── pipelines/
-│   │   ├── backfill_flow.py
-│   │   ├── data_ingestion_flow.py
-│   │   ├── monitoring_flow.py
-│   │   ├── training_flow.py
-│   │   └── utils.py
-│   ├── service/
-│   │   ├── main.py
-│   │   ├── schema.py
-│   │   └── xai_artifacts.py
-│   └── config.py
+│   │   ├── ensemble_simplification_v0_2_0.ipynb
+│   │   │                                      # Benchmark controlado de simplificação do ensemble
+│   │   └── training_window_comparison_benchmark.ipynb
+│   │                                          # Expanding × Rolling 24m × Rolling 12m
+│   ├── renewable-energy-mlops.ipynb          # Narrativa técnica curada e documentação central
+│   ├── extract_test.png                      # Evidência visual auxiliar da extração
+│   ├── streamlit_day_ahead.png               # Evidência visual do dashboard Day-Ahead
+│   └── streamlit_monitoring.png              # Evidência visual do dashboard de monitoring
+├── scripts/
+│   └── port-forward-supervisor.sh            # Retry automático dos port-forwards críticos
+├── src/
+│   └── energy_mlops/
+│       ├── app/
+│       │   └── app.py                        # Aplicação/dashboard Streamlit
+│       ├── data/
+│       │   ├── build_features.py             # Integração dos dados e feature engineering
+│       │   ├── extract_energy.py             # Extração e preparação da geração do ONS
+│       │   ├── extract_weather.py            # Extração dos dados meteorológicos
+│       │   ├── feature_utils.py              # Contrato e seleção das features do modelo
+│       │   └── schema.py                     # Contratos Pandera dos dados
+│       ├── models/
+│       │   ├── interfaces.py                 # Interfaces de trainers e optimizers
+│       │   ├── optimize_stacking_ensemble.py # Otimização temporal com Optuna
+│       │   ├── temporal_stacking.py          # Stacking temporal com OOF causal
+│       │   ├── train_examples.py             # Exemplos compatíveis com a interface genérica
+│       │   └── train_stacking_ensemble.py    # Treino, métricas, SHAP e MLflow
+│       ├── pipelines/
+│       │   ├── backfill_flow.py              # Backfill histórico
+│       │   ├── data_ingestion_flow.py        # Ingestão de novos dados
+│       │   ├── monitoring_flow.py             # Drift, performance e gatilho de CT
+│       │   ├── training_flow.py               # Otimização, treino e Quality Gate
+│       │   └── utils.py                       # Utilitários compartilhados pelos flows
+│       ├── service/
+│       │   ├── main.py                        # API FastAPI e lifecycle do Champion
+│       │   ├── schema.py                      # Contratos Pydantic da API
+│       │   └── xai_artifacts.py               # Recuperação dos artifacts XAI
+│       └── config.py                          # Pydantic Settings e conexões externas
 ├── tests/
-│   ├── data/
-│   ├── models/
-│   ├── pipelines/
-│   └── service/
-├── CITATION.cff
-├── Dockerfile
-├── LICENSE
-├── Makefile
-├── pyproject.toml
-├── poetry.lock
-├── tox.ini
-└── README.md
+│   ├── data/                                  # Features, schemas e causalidade temporal
+│   ├── infra/
+│   │   └── test_port_forward_supervisor.py   # Retry, argumentos e encerramento seguro do supervisor
+│   ├── models/                                # Stacking, optimizer e treinamento
+│   ├── pipelines/                             # Flows, monitoring e Quality Gate
+│   ├── service/                               # API, serving e XAI
+│   ├── conftest.py                            # Fixtures compartilhadas
+│   └── test_config.py                         # Contrato central de configuração
+├── CITATION.cff                              # Metadados de citação do repositório
+├── Dockerfile                                # Imagem do serviço FastAPI
+├── LICENSE                                   # Licença MIT
+├── Makefile                                  # Automação de serviços, portas, testes e validação
+├── pyproject.toml                            # Dependências Poetry e ferramentas
+├── poetry.lock                               # Lockfile reproduzível do ambiente Python
+├── tox.ini                                   # Suíte isolada de qualidade
+└── README.md                                 # Landing page e Quick Start
 ```
 
 Datasets Parquet reais, secrets, logs, caches, banco SQLite auxiliar, outputs locais de SHAP e evidências E2E não fazem parte do repositório publicado.
@@ -315,6 +406,13 @@ Serviços locais esperados:
 | FastAPI | `http://localhost:8000` |
 | Prefect | `http://127.0.0.1:4200` |
 | Streamlit | `http://localhost:8501` |
+
+
+Os port-forwards críticos de **MLflow (`5000`)** e **RustFS API (`9000`)** são
+supervisionados por `scripts/port-forward-supervisor.sh`. Se o processo `kubectl`
+encerrar por perda de conexão, o supervisor tenta restabelecer o túnel automaticamente.
+
+Os logs dos port-forwards ficam separados em `.ports/`.
 
 Para encerrar port-forwards e processos locais:
 
@@ -364,7 +462,7 @@ poetry run tox -r -e py314
 Resultado validado:
 
 ```text
-122 passed
+129 passed
 0 failed
 2 warnings
 py314: OK
@@ -404,6 +502,9 @@ Portanto, o projeto possui **CI + entrega de imagem automatizada**, mas não se 
 - Experimentos controlados usam um snapshot Gold explícito e TRAIN/OOT derivados com corte temporal documentado, evitando leituras ambíguas por prefixo.
 - `make status` é diagnóstico; `make validate` funciona como gate operacional.
 - Unit tests isolam dependências externas quando a infraestrutura não faz parte do comportamento sob teste.
+- PostgreSQL e RustFS usam PVCs separados para metadata e artifacts do MLflow.
+- Persistência foi validada após restart de pods/deployments e do control-plane KinD.
+- Os port-forwards críticos `5000` e `9000` possuem retry automático no ambiente local.
 
 ## Documentação técnica
 
@@ -414,8 +515,10 @@ O README funciona como landing page. A análise detalhada do projeto, decisões 
 Documentos adicionais:
 
 - [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) — objetivo, contrato, métricas, limitações e governança do modelo.
-- [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble na v0.2.0.
+- [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — arquitetura local, persistência, configuração e resiliência.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
+- [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble.
+- [`notebooks/experiments/training_window_comparison_benchmark.ipynb`](notebooks/experiments/training_window_comparison_benchmark.ipynb) — benchmark Expanding × Rolling 24m × Rolling 12m.
 
 ## Packaging scope
 
@@ -428,15 +531,21 @@ Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MA
 - O ambiente validado é local, baseado em KinD; a migração para cloud/IaC ainda é roadmap.
 - O nome atual do Registered Model (`ensemble_lgb_xgb_rf_bahia`) reflete a arquitetura histórica e poderá futuramente evoluir para um nome orientado ao produto.
 - Compatibilidade com métricas históricas `*_YYYY` ainda é necessária enquanto modelos antigos permanecerem operacionalmente relevantes.
+- A vantagem observada da Expanding Window foi medida em um OOT específico e precisa ser reavaliada longitudinalmente.
 - Resultados de uma janela temporal não garantem comportamento idêntico em meses futuros; drift e performance precisam continuar sendo monitorados.
+- A persistência foi validada para reinícios de pods/deployments e do container control-plane do KinD, não para deleção de PVC, `kind delete cluster` ou perda do host.
 - O projeto é educacional e não substitui processos de validação, segurança e governança exigidos em operação energética real.
 
 ## Roadmap
 
-- comparar a janela **expansiva** com janelas rolling de **12 e 24 meses**, usando o mesmo holdout futuro;
+- repetir o benchmark de janelas com novos meses OOT fechados para avaliar a estabilidade da vantagem observada da **Expanding Window**;
 - reavaliar janelas mais longas somente quando houver histórico canônico suficiente de `capacidade_mw`;
-- acompanhar longitudinalmente a estabilidade de `LGBM + XGB + RF` e `LGBM + XGB` em novos meses OOT;
+- acompanhar longitudinalmente a estabilidade de `LGBM + XGB + RF` e `LGBM + XGB` em novos períodos OOT;
+- definir uma política explícita de simplificação por número de estimadores apenas se isso se tornar necessário no lifecycle operacional;
+- medir custo de treinamento, latência de inferência e tamanho dos artifacts quando esses fatores passarem a ser relevantes para a decisão arquitetural;
 - evoluir o Registered Model para uma identidade orientada ao produto, independente da arquitetura;
+- remover a compatibilidade de métricas `*_YYYY` quando nenhum modelo operacional relevante depender mais do contrato histórico;
+- definir uma estratégia de backup/restore para cenários além da fronteira local já validada;
 - criar blueprint IaC com Terraform para AWS, mantendo KinD + Helm como ambiente local reproduzível e a fase Cloud/IaC separada da evolução do modelo.
 
 ## Licença
