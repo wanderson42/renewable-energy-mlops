@@ -1,9 +1,14 @@
+import argparse
+import json
 import os
 import tempfile
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import mlflow
 import mlflow.sklearn
+import numpy as np
 import pandas as pd
 import s3fs
 from evidently import Report
@@ -16,6 +21,7 @@ from energy_mlops.data.build_features import (
     generate_wind_and_time_features,
 )
 from energy_mlops.data.feature_utils import (
+    get_model_feature_columns,
     select_model_features,
 )
 from energy_mlops.models.evaluation import (
@@ -67,12 +73,12 @@ MODEL_ALIAS = "champion"
 
 DEFAULT_REFERENCE_PATH = (
     "energy-lake/gold/"
-    "train_wind_energy_2024_01_expanding_up_to_2026_08.parquet"
+    "oot_test_wind_energy_2026_09.parquet"
 )
 
 DEFAULT_CURRENT_PATH = (
     "energy-lake/gold/"
-    "oot_test_wind_energy_2026_08.parquet"
+    "oot_test_wind_energy_2026_09.parquet"
 )
 
 DEFAULT_REPORT_PATH = (
@@ -123,7 +129,7 @@ def fetch_monitoring_data(
 
     logger = get_run_logger()
 
-    fs = s3fs.S3FileSystem()
+    fs = s3fs.S3FileSystem(**settings.storage_options)
 
     logger.info(
         f"Lendo Reference: {reference_path}"
@@ -159,6 +165,55 @@ def fetch_monitoring_data(
 # 2. ENGENHARIA + CONTRATO CANÔNICO DE FEATURES
 # ==============================================================================
 
+def prepare_feature_snapshot(df: pd.DataFrame) -> pd.DataFrame:
+    """Preserva features Gold; gera features apenas para entradas brutas."""
+    features = get_model_feature_columns()
+    if set(features).issubset(df.columns) and "capacidade_mw" in df:
+        return df.copy()
+    return generate_wind_and_time_features(df)
+
+
+def describe_window(df: pd.DataFrame) -> dict:
+    """Cobertura horária no intervalo observado, sem imputar lacunas."""
+    if df.empty or "date" not in df:
+        raise ValueError("Monitoring exige dataset não vazio com date.")
+    dates = pd.to_datetime(df["date"], utc=True, errors="raise")
+    if dates.isna().any() or dates.duplicated().any():
+        raise ValueError("Monitoring exige timestamps válidos e únicos.")
+    if not dates.eq(dates.dt.floor("h")).all():
+        raise ValueError("Monitoring exige timestamps na grade horária.")
+    if not dates.is_monotonic_increasing:
+        raise ValueError("Monitoring exige ordenação temporal.")
+    expected = pd.date_range(dates.min(), dates.max(), freq="h")
+    local = dates.dt.tz_convert("America/Sao_Paulo")
+    first = local.min()
+    next_month = (first.tz_localize(None).to_period("M") + 1).start_time
+    end_month = next_month.tz_localize("America/Sao_Paulo") - pd.Timedelta(hours=1)
+    complete_month = (
+        local.min() == first.normalize().replace(day=1)
+        and local.max() == end_month
+        and len(dates) == len(expected)
+    )
+    return {
+        "rows": len(df), "start_utc": dates.min().isoformat(),
+        "end_utc": dates.max().isoformat(),
+        "missing_hours_in_observed_interval": len(expected.difference(dates)),
+        "window_status": "COMPLETE_MONTH" if complete_month else "PARTIAL_WINDOW",
+    }
+
+
+def resolve_monitoring_model() -> dict:
+    client = MlflowClient(tracking_uri=settings.MLFLOW_TRACKING_URI)
+    version = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+    run = client.get_run(version.run_id)
+    return {
+        "model_name": MODEL_NAME, "version": str(version.version),
+        "run_id": version.run_id,
+        "baseline_nmae_pct": float(resolve_metric(run.data.metrics, "oot_nmae_pct")),
+        "training_end": getattr(run.data, "tags", {}).get("training_end"),
+    }
+
+
 @task(
     name="Preparar Features para Monitoramento"
 )
@@ -190,9 +245,7 @@ def prepare_monitoring_features(
     )
 
     df_ref_feat = (
-        generate_wind_and_time_features(
-            df_ref
-        )
+        prepare_feature_snapshot(df_ref)
     )
 
     logger.info(
@@ -201,9 +254,7 @@ def prepare_monitoring_features(
     )
 
     df_cur_feat = (
-        generate_wind_and_time_features(
-            df_cur
-        )
+        prepare_feature_snapshot(df_cur)
     )
 
     logger.info(
@@ -446,7 +497,7 @@ def save_report_to_s3(
 
     logger = get_run_logger()
 
-    fs = s3fs.S3FileSystem()
+    fs = s3fs.S3FileSystem(**settings.storage_options)
 
     with fs.open(
         destination_path,
@@ -474,6 +525,7 @@ def save_report_to_s3(
 def evaluate_performance_drift(
     X_cur: pd.DataFrame,
     df_cur_feat: pd.DataFrame,
+    model_context: dict | None = None,
 ) -> tuple[
     bool,
     float,
@@ -530,45 +582,9 @@ def evaluate_performance_drift(
         settings.MLFLOW_TRACKING_URI
     )
 
-    client = MlflowClient(
-        tracking_uri=(
-            settings.MLFLOW_TRACKING_URI
-        )
-    )
-
-    champion_version = (
-        client.get_model_version_by_alias(
-            MODEL_NAME,
-            MODEL_ALIAS,
-        )
-    )
-
-    champion_run = client.get_run(
-        champion_version.run_id
-    )
-
-    metrics = (
-        champion_run.data.metrics
-    )
-
-    # Contrato canônico com compatibilidade
-    # histórica genérica resolvida em training_flow.
-    baseline_nmae_pct = (
-        resolve_metric(
-            metrics,
-            "oot_nmae_pct",
-        )
-    )
-
-    # --------------------------------------------------------------------------
-    # Carregamento do Champion
-    # --------------------------------------------------------------------------
-
-    model_uri = (
-        f"models:/"
-        f"{MODEL_NAME}"
-        f"@{MODEL_ALIAS}"
-    )
+    context = model_context or resolve_monitoring_model()
+    baseline_nmae_pct = context["baseline_nmae_pct"]
+    model_uri = f"models:/{MODEL_NAME}/{context['version']}"
 
     champion_model = (
         mlflow.sklearn.load_model(
@@ -578,7 +594,7 @@ def evaluate_performance_drift(
 
     logger.info(
         "Contrato de inferência do Champion "
-        f"v{champion_version.version}: "
+        f"v{context['version']}: "
         f"{get_model_feature_order(champion_model)}"
     )
 
@@ -642,148 +658,101 @@ def evaluate_performance_drift(
 # 7. PIPELINE DE MONITORAMENTO
 # ==============================================================================
 
-@flow(
-    name=(
-        "Pipeline de Monitoramento "
-        "em Lote (Evidently AI)"
-    )
-)
+@flow(name="Pipeline de Monitoramento em Lote (Evidently AI)")
 def batch_monitoring_pipeline(
-    reference_path: str = (
-        DEFAULT_REFERENCE_PATH
-    ),
-    current_path: str = (
-        DEFAULT_CURRENT_PATH
-    ),
-    output_report_path: str = (
-        DEFAULT_REPORT_PATH
-    ),
+    reference_path: str = DEFAULT_REFERENCE_PATH,
+    current_path: str = DEFAULT_CURRENT_PATH,
+    output_report_path: str = DEFAULT_REPORT_PATH,
+    *,
+    trigger_training: bool = False,
 ):
-    """
-    Pipeline principal de Monitoring.
-
-    A decisão de Continuous Training utiliza
-    uma regra OR:
-
-        Data Drift
-            OR
-        Performance Drift
-
-    O relatório Evidently é persistido antes
-    da avaliação de Performance Drift para
-    preservar a evidência de Data Drift mesmo
-    caso uma etapa posterior falhe.
-    """
-
+    """Observação por padrão; CT explícito somente em mês completo com truth."""
     logger = get_run_logger()
+    context = resolve_monitoring_model()
+    df_ref, df_cur = fetch_monitoring_data(reference_path, current_path)
+    reference_window = describe_window(df_ref)
+    current_window = describe_window(df_cur)
+    if context["training_end"]:
+        training_end = pd.Timestamp(context["training_end"])
+        if training_end.tzinfo is None:
+            training_end = training_end.tz_localize("UTC")
+        if pd.Timestamp(current_window["start_utc"]) <= training_end:
+            raise ValueError("Current sobrepõe o TRAIN do modelo avaliado.")
+    X_ref, X_cur, df_cur_feat = prepare_monitoring_features(df_ref, df_cur)
+    for X in (X_ref, X_cur):
+        if not np.isfinite(X.to_numpy(dtype=float)).all():
+            raise ValueError("Features de monitoring devem ser finitas.")
+    html, data_drift, share = generate_evidently_report(X_ref, X_cur)
+    execution_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
+    history_base = output_report_path.removesuffix(".html") + "/" + execution_id
+    # Evidência histórica primeiro; caminho atual preserva compatibilidade do dashboard.
+    save_report_to_s3(html, history_base + ".html")
+    save_report_to_s3(html, output_report_path)
 
-    logger.info(
-        "Iniciando Pipeline de "
-        "Monitoramento MLOps"
-    )
-
-    # --------------------------------------------------------------------------
-    # 1. Carga
-    # --------------------------------------------------------------------------
-
-    (
-        df_ref,
-        df_cur,
-    ) = fetch_monitoring_data(
-        reference_path,
-        current_path,
-    )
-
-    # --------------------------------------------------------------------------
-    # 2. Engenharia + contrato canônico
-    # --------------------------------------------------------------------------
-
-    (
-        X_ref,
-        X_cur,
-        df_cur_feat,
-    ) = prepare_monitoring_features(
-        df_ref,
-        df_cur,
-    )
-
-    # --------------------------------------------------------------------------
-    # 3. Data Drift
-    # --------------------------------------------------------------------------
-
-    (
-        html_report,
-        data_drift_detected,
-        share_drifted,
-    ) = generate_evidently_report(
-        X_ref,
-        X_cur,
-    )
-
-    # --------------------------------------------------------------------------
-    # 4. Persistência imediata do relatório
-    # --------------------------------------------------------------------------
-
-    save_report_to_s3(
-        html_report,
-        output_report_path,
-    )
-
-    # --------------------------------------------------------------------------
-    # 5. Performance Drift
-    # --------------------------------------------------------------------------
-
-    (
-        performance_drift_detected,
-        baseline_nmae_pct,
-        current_nmae_pct,
-        nmae_delta_pp,
-    ) = evaluate_performance_drift(
-        X_cur,
-        df_cur_feat,
-    )
-
-    # --------------------------------------------------------------------------
-    # 6. Governança / Continuous Training
-    # --------------------------------------------------------------------------
-
-    if (
-        data_drift_detected
-        or performance_drift_detected
-    ):
-        reasons = []
-
-        if data_drift_detected:
-            reasons.append(
-                "Data Drift="
-                f"{share_drifted:.1%}"
+    performance_drift = False
+    performance = {"status": "UNAVAILABLE_GROUND_TRUTH"}
+    if "wind_generation_mw" in df_cur_feat:
+        truth = pd.to_numeric(df_cur_feat["wind_generation_mw"], errors="coerce")
+        capacity = pd.to_numeric(df_cur_feat["capacidade_mw"], errors="coerce")
+        valid = np.isfinite(truth) & truth.ge(0) & np.isfinite(capacity) & capacity.gt(0)
+        if valid.any():
+            performance_drift, baseline, current, delta = evaluate_performance_drift(
+                X_cur.loc[valid], df_cur_feat.loc[valid], context,
             )
-
-        if performance_drift_detected:
-            reasons.append(
-                "Performance Drift="
-                f"{nmae_delta_pp:+.2f} p.p."
-            )
-
-        logger.warning(
-            "🚨 RETRAINING TRIGGERED | "
-            + " | ".join(
-                reasons
-            )
-        )
-
-        continuous_training_pipeline()
-
-    else:
-        logger.info(
-            "✅ Data Drift e Performance Drift "
-            "dentro dos limites de governança. "
-            "Champion baseline nMAE: "
-            f"{baseline_nmae_pct:.2f}% | "
-            "Current nMAE: "
-            f"{current_nmae_pct:.2f}%."
-        )
+            performance = {
+                "status": "AVAILABLE" if valid.all() else "PARTIAL_GROUND_TRUTH",
+                "evaluated_rows": int(valid.sum()),
+                "baseline_nmae_pct": baseline, "current_nmae_pct": current,
+                "delta_nmae_pp": delta, "drift_detected": performance_drift,
+            }
+    drift = data_drift or performance_drift
+    eligible = (
+        current_window["window_status"] == "COMPLETE_MONTH"
+        and performance["status"] == "AVAILABLE"
+    )
+    summary = {
+        "execution_id": execution_id, "evaluated_at_utc": datetime.now(UTC).isoformat(),
+        "model": context, "reference_path": reference_path, "current_path": current_path,
+        "reference_window": reference_window, "current_window": current_window,
+        "data_drift": {"share": share, "detected": data_drift, "threshold": DRIFT_SHARE_THRESHOLD},
+        "performance": performance,
+        "performance_threshold_pp": PERFORMANCE_NMAE_DELTA_PP_THRESHOLD,
+        "training_requested": trigger_training,
+        "training_eligible": eligible,
+        "training_status": "NOT_TRIGGERED",
+        "report_path": history_base + ".html",
+    }
+    fs = s3fs.S3FileSystem(**settings.storage_options)
+    summary_path = history_base + ".json"
+    def persist_summary():
+        with fs.open(summary_path, "w", encoding="utf-8") as file:
+            json.dump(summary, file, ensure_ascii=False, indent=2, allow_nan=False)
+    persist_summary()
+    if trigger_training and eligible and drift:
+        summary["training_status"] = "STARTED"
+        persist_summary()
+        try:
+            continuous_training_pipeline()
+        except Exception:
+            summary["training_status"] = "FAILED"
+            persist_summary()
+            raise
+        summary["training_status"] = "COMPLETED"
+        persist_summary()
+    elif trigger_training and not eligible:
+        logger.warning("CT não executado: janela parcial ou ground truth incompleto.")
+    logger.info(json.dumps(summary, ensure_ascii=False))
+    return summary
 
 
 if __name__ == "__main__":
-    batch_monitoring_pipeline()
+    parser = argparse.ArgumentParser(description="Monitoring observacional por padrão.")
+    parser.add_argument("--reference-path", default=DEFAULT_REFERENCE_PATH)
+    parser.add_argument("--current-path", required=True)
+    parser.add_argument("--output-report-path", default=DEFAULT_REPORT_PATH)
+    parser.add_argument("--trigger-training", action="store_true")
+    args = parser.parse_args()
+    batch_monitoring_pipeline(
+        reference_path=args.reference_path, current_path=args.current_path,
+        output_report_path=args.output_report_path, trigger_training=args.trigger_training,
+    )

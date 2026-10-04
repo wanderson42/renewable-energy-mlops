@@ -28,3 +28,9 @@ data/
 *.jpg
 *.csv
 *.sqlite
+# Referência canônica necessária para inferência (nenhum dataset operacional).
+!data/
+data/*
+!data/reference/
+data/reference/*
+!data/reference/bahia_wind_capacity_checkpoints.csv

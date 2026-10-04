@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-
 
 GOVERNANCE_POLICY_VERSION = "same_oot_v1"
 
@@ -87,7 +86,7 @@ def build_automatic_governance_tags(
         )
 
     if decided_at_utc is None:
-        decided_at_utc = datetime.now(timezone.utc)
+        decided_at_utc = datetime.now(UTC)
     elif decided_at_utc.tzinfo is None:
         raise ValueError(
             "decided_at_utc deve possuir timezone explícito."
@@ -119,7 +118,7 @@ def build_automatic_governance_tags(
         "governance_policy_version": GOVERNANCE_POLICY_VERSION,
         "governance_decided_at_utc": (
             decided_at_utc
-            .astimezone(timezone.utc)
+            .astimezone(UTC)
             .isoformat()
         ),
         "governance_decision_source": "AUTOMATIC",

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -50,7 +50,7 @@ def test_build_automatic_governance_tags_preserves_same_oot_context():
         2,
         18,
         0,
-        tzinfo=timezone.utc,
+        tzinfo=UTC,
     )
 
     tags = build_automatic_governance_tags(

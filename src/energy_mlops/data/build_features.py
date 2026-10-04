@@ -24,7 +24,7 @@ def _normalize_datetime_series(
     )
 
     if result.dt.tz is not None:
-        result = result.dt.tz_localize(None)
+        result = result.dt.tz_convert("UTC").dt.tz_localize(None)
 
     return result.astype(
         "datetime64[ns]"

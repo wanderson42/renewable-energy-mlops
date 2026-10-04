@@ -29,6 +29,9 @@ RUN poetry install --only main --no-root --no-ansi
 # Copia o restante do código fonte (incluindo src, README.md, etc.)
 COPY . .
 
+# Falha no build se a referência operacional não estiver no contexto.
+RUN test -s /app/data/reference/bahia_wind_capacity_checkpoints.csv
+
 EXPOSE 8000
 
 CMD ["uvicorn", "energy_mlops.service.main:app", "--host", "0.0.0.0", "--port", "8000"]

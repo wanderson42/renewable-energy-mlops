@@ -57,8 +57,8 @@ def validate_energy_month_boundary(
     )
 
     actual_last = pd.to_datetime(
-        df_energy["date"]
-    ).max()
+        df_energy["date"], utc=True
+    ).dt.tz_localize(None).max()
 
     if actual_last < expected_last_utc:
         raise ValueError(
