@@ -424,9 +424,10 @@ O runbook completo está em [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 A fase v1.0 já exercitou, em um KinD separado, provisionamento por Terraform/Helm,
 restauração, serving pareado da v17 e recuperação declarativa de uma falha de
-pull, com PVCs preservados e plano final sem mudanças. O runtime MLflow já foi
-empacotado, testado e publicado no GHCR; sua adoção no ensaio e o blueprint AWS
-seguem em andamento. O escopo, as evidências
+pull, com PVCs preservados e plano final sem mudanças. O runtime MLflow foi
+empacotado, publicado no GHCR e validado no ensaio por digest, com Registry e
+leitura/hash de artefato aprovados. A reprodução de Prefect/dashboard e o
+blueprint AWS seguem em andamento. O escopo, as evidências
 e os critérios de aceitação estão em
 [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
@@ -532,11 +533,11 @@ Documentos adicionais:
 
 Este repositório é uma **aplicação/sistema MLOps**, não uma biblioteca Python de propósito geral. O pacote `energy_mlops` é instalado localmente pelo Poetry para organizar imports e testes, mas o projeto não é distribuído via PyPI.
 
-Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MANIFEST.in` apenas para simular um pacote de distribuição. `pyproject.toml` + `poetry.lock` permanecem as fontes de verdade do ambiente Python.
+Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MANIFEST.in` apenas para simular um pacote de distribuição. `pyproject.toml` + `poetry.lock` permanecem as fontes de verdade do ambiente Python da aplicação. O arquivo `docker/mlflow/requirements.txt` pertence ao runtime separado do servidor MLflow (Python 3.11), cujas versões foram verificadas e empacotadas em uma imagem própria.
 
 ## Limitações atuais
 
-- O ambiente validado é local, baseado em KinD; a migração para cloud/IaC ainda é roadmap.
+- O ambiente validado é local, baseado em KinD com deployment por Terraform/Helm no ensaio; o blueprint AWS permanece em desenvolvimento, sem deployment cloud.
 - O nome atual do Registered Model (`ensemble_lgb_xgb_rf_bahia`) reflete a arquitetura histórica e poderá futuramente evoluir para um nome orientado ao produto.
 - Compatibilidade com métricas históricas `*_YYYY` ainda é necessária enquanto modelos antigos permanecerem operacionalmente relevantes.
 - A vantagem observada da Expanding Window foi medida em um OOT específico e precisa ser reavaliada longitudinalmente.
@@ -553,7 +554,7 @@ Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MA
 - medir custo de treinamento, latência de inferência e tamanho dos artifacts quando esses fatores passarem a ser relevantes para a decisão arquitetural;
 - evoluir o Registered Model para uma identidade orientada ao produto, independente da arquitetura;
 - remover a compatibilidade de métricas `*_YYYY` quando nenhum modelo operacional relevante depender mais do contrato histórico;
-- definir uma estratégia de backup/restore para cenários além da fronteira local já validada;
+- ampliar o ensaio de backup/restore já validado entre dois clusters KinD para outros cenários de recuperação, conforme necessário;
 - criar blueprint IaC com Terraform para AWS, mantendo KinD + Helm como ambiente local reproduzível e a fase Cloud/IaC separada da evolução do modelo.
 
 ## Licença

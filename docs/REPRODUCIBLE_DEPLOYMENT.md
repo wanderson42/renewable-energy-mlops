@@ -17,8 +17,9 @@ retornou `No changes` com serving habilitado. O rollout operacional da origem
 permanece manual. O ensaio de falha de pull e recuperação declarativa também
 passou: digest validado, v17/Run, inferência e UIDs dos PVCs preservados, com
 plano final `No changes`. A imagem própria do runtime MLflow foi construída,
-testada sem rede externa e publicada no GHCR; sua adoção no KinD está preparada
-e aguarda validação real. A configuração dos processos locais e o blueprint
+testada sem rede externa, publicada no GHCR e adotada no KinD de ensaio.
+Runtime, Registry, leitura/hash de `MLmodel`, PVCs e serving passaram, com
+plano final `No changes`. A configuração dos processos locais e o blueprint
 AWS continuam pendentes.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
@@ -172,8 +173,8 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [x] Gate HTTP e lote pareado `paired_synthetic_batch_v1` aprovados no destino.
 - [x] Terraform instala a release e um novo plano após o apply não apresenta mudanças.
 - [x] Falha de pull por digest e recuperação declarativa exercitadas com gate e PVCs preservados.
-- [ ] Upgrade para uma nova imagem funcional validado; o ensaio de pull não cobre esse caso.
-- [ ] Runtime MLflow empacotado e validado em imagem própria por digest.
+- [x] Upgrade funcional do runtime MLflow validado com Registry, artefato, PVCs e serving.
+- [x] Runtime MLflow empacotado e validado em imagem própria por digest.
 - [ ] Configuração e inicialização de Prefect/dashboard incluídas na reprodução local.
 - [x] Automação de deployment local executada: plano, apply, rollout e gate.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
@@ -211,8 +212,9 @@ correspondentes mudam. Ele não aplica manifests nem publica imagens.
 O chart `0.1.3` fixa as nove versões coletadas no runtime do servidor MLflow.
 Ainda há instalação via pip no startup, com dependência de rede/PyPI e sem
 hashes de wheels ou congelamento de todas as dependências transitivas.
-Empacotar esse runtime em imagem própria e validá-la por digest permanece
-pendente antes de declarar reprodução completa.
+A imagem própria foi posteriormente construída e validada por digest no
+ensaio; os resultados atuais estão nas seções 17 e 18. O perfil padrão com
+a imagem oficial mantém esse comportamento histórico.
 
 O operador também confirmou os cinco testes iniciais de renderização na
 máquina de origem. O aviso de lint sobre ícone recomendado é informativo;
@@ -936,8 +938,9 @@ O smoke isolado com SQLite não comprova conexão a PostgreSQL/RustFS.
 No runtime do editor não há Docker; foram verificadas sintaxe Python/shell/YAML,
 consistência dos pins e da base com o inventário, ordem build/teste/publicação
 e rejeição de metadados de versões incorretas. O build e o HTTP reais foram
-confirmados pelo operador e pelos logs do Actions; o deployment desse runtime
-e os gates reais de PostgreSQL/RustFS ainda aguardam execução no ensaio.
+confirmados pelo operador e pelos logs do Actions. O deployment desse runtime
+e os gates reais de PostgreSQL/RustFS também passaram posteriormente, conforme
+a seção 18.
 
 ## 17. Imagem publicada e adoção do runtime no ensaio
 
@@ -1020,8 +1023,50 @@ genérica do runtime.
 No editor passaram três lints Helm, dez testes de chart, 23 de serving/review,
 quatro do novo gate e `terraform fmt -check`. Os testes usam renderização,
 clientes simulados e avaliação Terraform sem provider. Os seis testes
-Terraform com provider Helm/mocks e o apply/gates Kubernetes desta atualização
-aguardam execução no host/CI; não são resultados reais do cluster do editor.
+Terraform com provider Helm/mocks passaram no
+[CI da revisão e3515f1](https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37385858167),
+assim como a
+[validação Helm](https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37385858263).
+O apply/gates Kubernetes foram executados pelo operador, conforme a seção 18;
+o cluster não roda no runtime do editor.
+
+## 18. Runtime MLflow validado no Kubernetes
+
+O operador concluiu `make repro-mlflow-apply` na revisão `e3515f1`. O apply
+Terraform atualizou a mesma release para o chart `0.1.5`; o gate de serving
+passou em `2026-10-05T23:07:01.774506+00:00` e o gate do runtime em
+`2026-10-05T23:07:06.212901+00:00`. O deployment e o pod Ready do MLflow
+confirmaram o digest publicado `sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f`.
+
+| Caminho verificado | Resultado real |
+|---|---|
+| Runtime no novo pod | Python `3.11.15`, nove versões observadas, imports e `pip check` aprovados |
+| Inicialização | `runtime_installation_at_startup=false` |
+| Registry via MLflow/PostgreSQL | Champion v17, Run histórica e URIs restaurados preservados |
+| Artefato lido no RustFS | `MLmodel`, 2.015 bytes, SHA-256 igual ao manifesto restaurado |
+| Serving da API | Mesmo digest da API, v17/Run e métricas; três previsões pareadas iguais à origem |
+| Persistência | UIDs dos PVCs preservados |
+| Plano posterior | `0/0/0`, `No changes`, chart `0.1.5`, API habilitada, imagem MLflow fixada e instalação no startup desabilitada |
+
+O SHA-256 do arquivo `MLmodel` foi
+`aa618a9ed0f5abc00af614b175cd44ef048a383dc4b4954fdb920c566632a662`.
+A diferença máxima nas previsões pareadas permaneceu zero em FC e MW.
+A evidência sanitizada está em
+[`evidence/mlflow_runtime_adoption_2026-10-05.json`](evidence/mlflow_runtime_adoption_2026-10-05.json).
+
+Esse marco fecha a construção, publicação e adoção do runtime empacotado.
+O servidor passou a usar as dependências da imagem em cada início; a instalação
+não depende de PyPI no startup desse perfil. O pull da imagem ainda requer
+acesso ao registry ou imagem disponível no cache do node.
+Não houve promoção, treino ou alteração da identidade do modelo. O ensaio
+não executou rollback dessa atualização de MLflow/chart, não re-verificou todo
+o conteúdo dos buckets e não mediu disponibilidade contínua durante o rollout.
+
+A próxima frente local é reproduzir a inicialização de Prefect e dashboard
+com seus endpoints, portas e processos explicitamente isolados. O ambiente
+operacional da v0.3 continua como referência do acompanhamento longitudinal.
+Depois dessa frente, completar o blueprint AWS com validação estática e mocks,
+sem criar recursos pagos e sem alegar deployment cloud.
 
 ## Referências do projeto
 
