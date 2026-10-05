@@ -86,6 +86,7 @@ def test_ct_requires_explicit_request_complete_month_and_truth(partial, truth, d
         patch.object(monitoring, "prepare_monitoring_features", return_value=(X_ref, X_cur, cur)),
         patch.object(monitoring, "generate_evidently_report", return_value=("html", drift, .7 if drift else 0.)),
         patch.object(monitoring, "evaluate_performance_drift", return_value=(False, 6.6788, 7., .3212)) as evaluate,
+        patch.object(monitoring, "persist_generation_comparison", return_value={}),
         patch.object(monitoring, "save_report_to_s3") as save,
         patch.object(monitoring.s3fs, "S3FileSystem", return_value=MagicMock()),
         patch.object(monitoring, "continuous_training_pipeline") as train,

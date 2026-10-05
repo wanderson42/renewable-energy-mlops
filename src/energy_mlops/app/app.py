@@ -1,5 +1,8 @@
+import io
+import json
 import os
 import time
+import zipfile
 
 import boto3
 import pandas as pd
@@ -104,20 +107,66 @@ def fetch_real_weather_forecast():
     return {"predictions": df_forecast.to_dict(orient="records")}
 
 @st.cache_data(ttl=300)
-def load_drift_report_html():
-    """Busca o relatório HTML gerado pelo Evidently AI diretamente no Data Lake (RustFS)."""
-    try:
-        s3_client = boto3.client(
-            "s3",
-            endpoint_url=settings.RUSTFS_ENDPOINT,
-            aws_access_key_id=settings.RUSTFS_ROOT_USER,
-            aws_secret_access_key=settings.RUSTFS_ROOT_PASSWORD,
-            region_name="us-east-1",
+def load_monitoring_artifacts():
+    """Carrega o resumo concluído mais recente e seu HTML correspondente."""
+    client = boto3.client(
+        "s3",
+        endpoint_url=settings.RUSTFS_ENDPOINT,
+        aws_access_key_id=settings.RUSTFS_ROOT_USER,
+        aws_secret_access_key=settings.RUSTFS_ROOT_PASSWORD,
+        region_name="us-east-1",
+    )
+    bucket = settings.RUSTFS_BUCKET
+    candidates = []
+    for page in client.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix="monitoring/drift_report/",
+    ):
+        candidates.extend(
+            obj for obj in page.get("Contents", [])
+            if obj["Key"].endswith(".json")
         )
-        response = s3_client.get_object(Bucket="energy-lake", Key="monitoring/drift_report.html")
-        return response['Body'].read().decode('utf-8')
-    except Exception as e:  # noqa: BLE001, F841
+    if not candidates:
         return None
+    latest = max(candidates, key=lambda obj: (obj["LastModified"], obj["Key"]))
+    summary_bytes = client.get_object(
+        Bucket=bucket, Key=latest["Key"],
+    )["Body"].read()
+    summary = json.loads(summary_bytes)
+    # A chave histórica pareada evita combinar HTML e JSON de execuções distintas.
+    html_key = latest["Key"].removesuffix(".json") + ".html"
+    html_bytes = client.get_object(Bucket=bucket, Key=html_key)["Body"].read()
+    comparison = summary.get("generation_comparison", {})
+    hourly_bytes = daily_bytes = None
+    hourly = daily = None
+    if comparison:
+        prefix = latest["Key"].removesuffix(".json")
+        hourly_bytes = client.get_object(Bucket=bucket, Key=prefix + ".hourly.csv")["Body"].read()
+        daily_bytes = client.get_object(Bucket=bucket, Key=prefix + ".daily.csv")["Body"].read()
+        hourly = pd.read_csv(io.BytesIO(hourly_bytes), dtype={"model_version": str})
+        daily = pd.read_csv(io.BytesIO(daily_bytes))
+        if not hourly["execution_id"].eq(summary["execution_id"]).all():
+            raise ValueError("Artefato horário pertence a outra execução.")
+        if not hourly["model_run_id"].eq(summary["model"]["run_id"]).all():
+            raise ValueError("Artefato horário pertence a outro modelo.")
+        hourly["date_local"] = pd.to_datetime(hourly["date"], utc=True).dt.tz_convert("America/Sao_Paulo")
+        hourly["dia_local"] = hourly["date_local"].dt.strftime("%Y-%m-%d")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("relatorio.html", html_bytes)
+        package.writestr("resumo.json", summary_bytes)
+        if hourly_bytes is not None:
+            package.writestr("comparacao_horaria.csv", hourly_bytes)
+            package.writestr("resumo_diario.csv", daily_bytes)
+    return summary, html_bytes.decode("utf-8"), archive.getvalue(), hourly, daily
+
+
+def monitoring_window_text(window):
+    start = pd.Timestamp(window["start_utc"]).tz_convert("America/Sao_Paulo")
+    end = pd.Timestamp(window["end_utc"]).tz_convert("America/Sao_Paulo")
+    return (
+        f"{start:%d/%m/%Y %H:%M} → {end:%d/%m/%Y %H:%M} "
+        f"(UTC−03) | {window['rows']} horas"
+    )
 
 # ==========================================
 # BARRA LATERAL (SIDEBAR)
@@ -661,17 +710,30 @@ with main_tab_op:
             # ======================================
             if champion_nmae is not None:
 
-                st.info(
-                    "📐 **Desempenho de "
-                    "Generalização — OOT**\n\n"
-                    f"O modelo **Champion** apresentou "
-                    f"**nMAE OOT de "
-                    f"{champion_nmae:.2f}%**, "
-                    "indicando que o erro absoluto médio "
-                    "correspondeu a aproximadamente "
-                    f"**{champion_nmae:.1f}% da capacidade "
-                    "utilizada na normalização**."
+                executive_text = (
+                    "💼 **Visão executiva — desempenho histórico**\n\n"
+                    "Na avaliação histórica em um período posterior "
+                    "ao treinamento (OOT), o erro médio normalizado "
+                    f"foi de **{champion_nmae:.2f}% da capacidade instalada**. "
                 )
+
+                if champion_mae_mw is not None:
+                    executive_text += (
+                        "Em termos de potência, a diferença absoluta média "
+                        "entre a geração prevista e a observada foi de "
+                        f"**{champion_mae_mw:.0f} MW**. "
+                    )
+
+                executive_text += (
+                    "Esses indicadores ajudam a dimensionar os desvios "
+                    "das previsões usadas no planejamento da geração.\n\n"
+                    "Esse resultado descreve o desempenho histórico. "
+                    "A qualidade das previsões atuais será acompanhada "
+                    "conforme os dados de geração observada estiverem "
+                    "disponíveis."
+                )
+
+                st.success(executive_text)
 
             # Métricas técnicas complementares
             if (
@@ -893,32 +955,149 @@ with main_tab_op:
 # ABA 2: MONITORAMENTO (EVIDENTLY AI)
 # ------------------------------------------
 with main_tab_drift:
-    st.markdown(
-        "### 📉 Monitoramento de Degradação "
-        "(Data Drift & Performance Drift)"
-    )
-
+    st.markdown("### 📉 Monitoramento de Dados e Desempenho")
     st.caption(
-        "O pipeline monitora mudanças estatísticas "
-        "nas features do modelo e degradação do nMAE "
-        "do Champion em relação à baseline OOT."
+        "Mudanças nas variáveis de entrada e desempenho histórico do modelo "
+        "na janela monitorada, comparado à referência OOT."
     )
+    if st.button("🔄 Atualizar monitoramento"):
+        load_monitoring_artifacts.clear()
 
-    st.caption(
-        "Painel interativo gerado pelo **Evidently AI**. " \
-        "Exibe divergências estatísticas entre os dados de " \
-        "validação (Reference) e os dados de produção recentes (Current)."
-        )
+    try:
+        monitoring = load_monitoring_artifacts()
+    except Exception as error:  # noqa: BLE001
+        monitoring = None
+        st.error(f"Não foi possível carregar os artefatos de monitoramento: {error}")
 
-    html_content = load_drift_report_html()
-
-    if html_content:
-        # Renderiza o HTML do Evidently preenchendo o espaço da aba
-        components.html(html_content, height=900, scrolling=True)
-
-        # Botão de ação (Mockup) para um Engenheiro MLOps decidir agir sobre o Drift
-        if st.button("🔄 Disparar Pipeline de Treinamento Contínuo (CT)", help="Invoca manualmente o flow de retreinamento no Prefect"):
-            st.warning("No ambiente de Portfólio atual, essa ação é demonstrativa. Em produção, isso acionaria a API REST do Prefect.")
+    if monitoring is None:
+        st.info("Nenhuma execução completa disponível para exibição. Confira os logs do pipeline.")
     else:
-        st.warning("⚠️ Relatório de Drift não encontrado no Data Lake (RustFS).")
-        st.info("💡 **Ação Necessária:** Execute o script `poetry run python src/energy_mlops/pipelines/monitoring_flow.py` para calcular o Drift e gerar o artefato HTML.")
+        summary, html_content, archive_bytes, hourly, daily = monitoring
+        reference = summary["reference_window"]
+        current = summary["current_window"]
+        performance = summary["performance"]
+        model = summary["model"]
+        evaluated = performance.get("evaluated_rows", 0)
+        rows = current["rows"]
+        evaluated_at = pd.Timestamp(summary["evaluated_at_utc"]).tz_convert("America/Sao_Paulo")
+
+        st.markdown("#### Contexto da execução")
+        st.write(f"**Referência:** {monitoring_window_text(reference)}")
+        st.write(f"**Janela monitorada:** {monitoring_window_text(current)}")
+        st.caption(
+            f"Gerado em {evaluated_at:%d/%m/%Y %H:%M:%S} (UTC−03) | "
+            f"Modelo avaliado: v{model['version']} | Execução: {summary['execution_id']}"
+        )
+        col_data, col_truth, col_performance = st.columns(3)
+        col_data.metric("Variáveis com drift", f"{summary['data_drift']['share']:.1%}")
+        col_truth.metric("Horas avaliadas com ground truth", f"{evaluated}/{rows}")
+        current_nmae = performance.get("current_nmae_pct")
+        delta = performance.get("delta_nmae_pp")
+        col_performance.metric(
+            "nMAE na janela avaliada",
+            f"{current_nmae:.2f}%" if current_nmae is not None else "Indisponível",
+            delta=f"{delta:+.2f} p.p. vs. OOT" if delta is not None else None,
+            delta_color="inverse",
+        )
+        if current["window_status"] != "COMPLETE_MONTH" or evaluated < rows:
+            st.info(
+                "Janela parcial: o drift de dados considera a janela meteorológica; "
+                "a performance considera somente horas com geração observada e "
+                "capacidade válidas. A comparação com um mês completo é um diagnóstico inicial."
+            )
+        if current_nmae is not None:
+            baseline = performance["baseline_nmae_pct"]
+            threshold = summary["performance_threshold_pp"]
+            result = "acionado" if performance["drift_detected"] else "não acionado"
+            st.caption(
+                f"Baseline OOT: {baseline:.2f}% | Alerta de performance: {result} | "
+                f"Limiar de aumento: {threshold:.2f} p.p."
+            )
+        st.caption(
+            "Mudanças nas variáveis de mês podem refletir a passagem do calendário. "
+            "Data drift, isoladamente, não comprova perda de desempenho."
+        )
+        st.write(
+            "**Retreinamento:** "
+            + {
+                "NOT_TRIGGERED": "não executado",
+                "STARTED": "iniciado",
+                "COMPLETED": "concluído",
+                "FAILED": "falhou",
+            }.get(summary["training_status"], summary["training_status"])
+        )
+        st.download_button(
+            "📥 Baixar monitoramento completo (ZIP)",
+            data=archive_bytes,
+            file_name=f"monitoramento_{summary['execution_id']}.zip",
+            mime="application/zip",
+        )
+        st.caption(
+            "O ZIP contém o relatório interativo completo e o resumo da execução "
+            "com datas, cobertura, modelo, métricas e caminhos dos dados. "
+            "Quando disponíveis, inclui também a comparação horária e o resumo diário em CSV. "
+            "Os datasets Parquet não estão incluídos."
+        )
+        with st.expander("Detalhes da execução e origem dos dados"):
+            st.json(summary)
+        if hourly is not None:
+            st.markdown("#### Estimativa com meteorologia observada × geração observada")
+            st.caption(
+                "Avaliação retrospectiva do modelo desta execução, não das previsões "
+                "day-ahead emitidas anteriormente. Horários em UTC−03."
+            )
+            days = hourly["dia_local"].drop_duplicates().tolist()
+            selected_day = st.selectbox(
+                "Período dos gráficos", ["Toda a janela", *days],
+                key=f"monitoring_day_{summary['execution_id']}",
+            )
+            plotted = hourly if selected_day == "Toda a janela" else hourly.loc[hourly["dia_local"].eq(selected_day)]
+            missing = int(plotted["observed_mw"].isna().sum())
+            if missing:
+                st.info(f"{missing} horas sem geração observada válida neste período. Lacunas não representam geração zero.")
+            # Datas locais sem timezone apenas para rótulos Plotly; UTC preservado no CSV.
+            x = plotted["date_local"].dt.tz_localize(None)
+            generation = go.Figure()
+            for column, label, color in [
+                ("predicted_mw", "Estimativa do modelo", "#38BDF8"),
+                ("observed_mw", "Geração observada (ONS)", "#10B981"),
+            ]:
+                generation.add_trace(go.Scatter(
+                    x=x, y=plotted[column], name=label, mode="lines",
+                    connectgaps=False, line={"color": color, "width": 2},
+                    hovertemplate="%{x|%d/%m %H:%M}<br>%{y:,.1f} MW<extra>%{fullData.name}</extra>",
+                ))
+            generation.update_layout(
+                template="plotly_dark", height=350, hovermode="x unified",
+                xaxis_title="Horário local (UTC−03)", yaxis_title="Potência (MW)",
+                legend={"orientation": "h", "y": 1.12},
+                margin={"l": 20, "r": 20, "t": 45, "b": 30},
+            )
+            st.plotly_chart(generation, width="stretch")
+            errors = go.Figure(go.Bar(
+                x=x, y=plotted["error_mw"],
+                marker_color=["#F59E0B" if pd.notna(value) and value >= 0 else "#A78BFA" for value in plotted["error_mw"]],
+                hovertemplate="%{x|%d/%m %H:%M}<br>Erro: %{y:+,.1f} MW<extra></extra>",
+            ))
+            errors.add_hline(y=0, line_color="#94A3B8", line_width=1)
+            errors.update_layout(
+                template="plotly_dark", height=240,
+                title="Erro horário: estimativa − observado",
+                xaxis_title="Horário local (UTC−03)", yaxis_title="Erro (MW)",
+                margin={"l": 20, "r": 20, "t": 45, "b": 30},
+            )
+            st.plotly_chart(errors, width="stretch")
+            st.caption("Acima de zero: superestimação. Abaixo de zero: subestimação. Sem truth, não há erro calculado.")
+            st.markdown("##### Resumo diário")
+            displayed = daily.rename(columns={
+                "dia_local": "Dia", "horas_meteorologicas": "Horas meteorológicas",
+                "horas_truth_validas": "Horas com truth", "horas_esperadas": "Horas esperadas",
+                "status": "Cobertura", "mae_mw": "MAE (MW)",
+                "nmae_pct": "nMAE (%)", "bias_mw": "Viés médio (MW)",
+            })
+            st.dataframe(displayed, hide_index=True, width="stretch")
+            st.caption("Métricas diárias são descritivas; o limiar de performance se aplica à janela agregada.")
+        else:
+            st.info("Esta execução histórica não contém comparação horária. Execute novamente o pipeline atualizado para gerar os gráficos.")
+        with st.expander("Relatório detalhado de data drift (Evidently)", expanded=False):
+            components.html(html_content, height=900, scrolling=True)
