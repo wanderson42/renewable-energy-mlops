@@ -48,7 +48,7 @@
     }
   },
   "validation_limits": [
-    "No source PostgreSQL or object snapshot has been captured or restored",
+    "Source PostgreSQL and object snapshot captured and verified; restoration is pending",
     "Serving, model identity and inference have not been validated in the destination",
     "One post-apply plan demonstrated no changes; deployment updates and rollback remain untested"
   ],

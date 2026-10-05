@@ -1,0 +1,32 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied make repro-backup summary and seven passing snapshot unit tests",
+  "snapshot": "snapshot-20261005T201656Z.LOW70R",
+  "verified_at": "2026-10-05T20:17:08.561351+00:00",
+  "model": {
+    "name": "ensemble_lgb_xgb_rf_bahia",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+    "source": "models:/m-b5741525f9ce41c98d166288955e9f6b",
+    "download_uri": "s3://mlflow-artifacts/6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts"
+  },
+  "buckets": {
+    "energy-lake": {"objects": 19, "bytes": 20949616},
+    "mlflow-artifacts": {"objects": 232, "bytes": 1808792024}
+  },
+  "files": {
+    "postgres.dump": {"bytes": 167563, "sha256": "18b7b5e5a86512365e0d9c39b5c0ae9f59c90118df1cd8ab5ed82a526596a491"},
+    "objects.tar": {"bytes": 1830041600, "sha256": "7490315ddc9530dd15ebccce8310b7b04b567d3426baad1462fc5c96c5a1c0a2"}
+  },
+  "completed_checks": [
+    "PostgreSQL dump produced and parsed into discarded SQL using pg_restore",
+    "Per-object archive SHA256 and byte sizes verified",
+    "Source listing and champion identity matched before/after object export",
+    "Source API confirmed champion v17 and the historical run ID after capture"
+  ],
+  "validation_limits": [
+    "Snapshot has not been restored in the destination",
+    "No cross-store atomic snapshot guarantee; absence of concurrent writers is an operational precondition",
+    "Destination serving and inference remain pending"
+  ]
+}

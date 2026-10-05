@@ -5,8 +5,10 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import tarfile
+import tempfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,7 +137,7 @@ def file_hash(path):
         return stream_hash(source)
 
 
-def verify(directory):
+def verify(directory, write=True):
     dump = directory / "postgres.dump"
     with dump.open("rb") as source:
         if source.read(5) != b"PGDMP":
@@ -173,22 +175,109 @@ def verify(directory):
         "files": {name: {"bytes": (directory / name).stat().st_size, "sha256": file_hash(directory / name)}
                   for name in ("postgres.dump", "objects.tar")},
     }
-    (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    (directory / "SHA256SUMS").write_text("".join(
-        f"{data['sha256']}  {name}\n" for name, data in summary["files"].items()
-    ))
+    if write:
+        (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        (directory / "SHA256SUMS").write_text("".join(
+            f"{data['sha256']}  {name}\n" for name, data in summary["files"].items()
+        ))
     return summary
+
+
+def load_snapshot(directory):
+    if (directory / "INCOMPLETE").exists():
+        raise RuntimeError("Incomplete snapshot cannot be restored.")
+    recorded = json.loads((directory / "summary.json").read_text())
+    if recorded["snapshot"] != directory.name:
+        raise RuntimeError("Snapshot directory differs from its recorded summary.")
+    for name in ("postgres.dump", "objects.tar"):
+        path = directory / name
+        if path.stat().st_size != recorded["files"][name]["bytes"] or file_hash(path) != recorded["files"][name]["sha256"]:
+            raise RuntimeError("Snapshot file differs from its recorded hash/size.")
+    verify(directory, write=False)
+    with tarfile.open(directory / "objects.tar", mode="r:") as archive:
+        with closing(archive.extractfile("manifest.json")) as data:
+            return json.load(data)
+
+
+def require_empty_destination(s3, client):
+    if client.search_registered_models(max_results=1):
+        raise RuntimeError("Destination Registry is not empty; refusing to restore.")
+    present = {item["Name"] for item in s3.list_buckets()["Buckets"]}
+    if not present.issubset(BUCKETS):
+        raise RuntimeError("Unexpected destination buckets; refusing to restore.")
+    for bucket in present:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
+            if page.get("Contents"):
+                raise RuntimeError("Destination objects already exist; refusing to overwrite.")
+    return present
+
+
+def restore_objects(s3, client, manifest, input_stream):
+    validate_manifest(manifest)
+    present = require_empty_destination(s3, client)
+    required = max(item["size"] for item in manifest["objects"]) + 64 * 1024**2
+    if shutil.disk_usage(tempfile.gettempdir()).free < required:
+        raise RuntimeError("Insufficient temporary space in the destination container.")
+    for bucket in BUCKETS:
+        if bucket not in present:
+            s3.create_bucket(Bucket=bucket)
+    with tarfile.open(fileobj=input_stream, mode="r|") as archive:
+        for index, record in enumerate(manifest["objects"]):
+            member = archive.next()
+            if member is None or not member.isfile() or member.name != record["entry"] or member.size != record["size"]:
+                raise RuntimeError("Unexpected archive object during restore.")
+            with closing(archive.extractfile(member)) as source, tempfile.TemporaryFile() as body:
+                digest = hashlib.sha256()
+                while True:
+                    chunk = source.read(4 * 1024**2)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    body.write(chunk)
+                if digest.hexdigest() != record["sha256"]:
+                    raise RuntimeError("Object hash mismatch before upload.")
+                body.seek(0)
+                headers = {name: value for name, value in record["headers"].items() if name in (
+                    "ContentType", "ContentEncoding", "ContentDisposition", "ContentLanguage", "CacheControl", "Metadata",
+                )}
+                s3.put_object(Bucket=record["bucket"], Key=record["key"], Body=body,
+                              ContentLength=record["size"], IfNoneMatch="*", **headers)
+            if (index + 1) % 20 == 0 or index + 1 == len(manifest["objects"]):
+                print(f"S3: {index + 1}/{len(manifest['objects'])} objetos restaurados", file=sys.stderr, flush=True)
+        footer = archive.next()
+        if footer is None or not footer.isfile() or footer.name != "manifest.json" or footer.size > 16 * 1024**2:
+            raise RuntimeError("Missing manifest footer during restore.")
+        with closing(archive.extractfile(footer)) as data:
+            if json.load(data) != manifest or archive.next() is not None:
+                raise RuntimeError("Restore manifest differs from the archive.")
+    return check_objects(s3, manifest)
+
+
+def check_objects(s3, manifest):
+    current = object_inventory(s3)
+    expected = {(item["bucket"], item["key"]): item["size"] for item in manifest["objects"]}
+    if {(item["bucket"], item["key"]): item["size"] for item in current} != expected:
+        raise RuntimeError("Restored object keys/sizes differ from the snapshot.")
+    for index, record in enumerate(manifest["objects"]):
+        response = s3.get_object(Bucket=record["bucket"], Key=record["key"])
+        with closing(response["Body"]) as data:
+            if response["ContentLength"] != record["size"] or stream_hash(data) != record["sha256"]:
+                raise RuntimeError("Restored object content differs from the snapshot.")
+        if (index + 1) % 20 == 0 or index + 1 == len(manifest["objects"]):
+            print(f"S3: {index + 1}/{len(manifest['objects'])} hashes confirmados", file=sys.stderr, flush=True)
+    return {"verified_objects": len(manifest["objects"]), "verified_bytes": sum(expected.values())}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("inventory", "export", "verify"))
+    parser.add_argument("mode", choices=("inventory", "export", "verify", "manifest", "restore", "check"))
     parser.add_argument("--directory", type=Path)
     args = parser.parse_args()
-    if args.mode == "verify":
+    if args.mode in ("verify", "manifest"):
         if args.directory is None:
-            parser.error("verify requires --directory")
-        print(json.dumps(verify(args.directory), indent=2))
+            parser.error("This mode requires --directory")
+        result = verify(args.directory) if args.mode == "verify" else load_snapshot(args.directory)
+        print(json.dumps(result, indent=2 if args.mode == "verify" else None))
         return
     import boto3
     from botocore.config import Config
@@ -198,6 +287,7 @@ def main():
     if endpoint != "http://rustfs:9000":
         raise RuntimeError("Expected cluster-internal RustFS endpoint.")
     os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "15"
+    os.environ["MLFLOW_HTTP_REQUEST_MAX_RETRIES"] = "2"
     client = MlflowClient(tracking_uri="http://127.0.0.1:5000", registry_uri="http://127.0.0.1:5000")
     s3 = boto3.client("s3", endpoint_url=endpoint, config=Config(
         signature_version="s3v4", s3={"addressing_style": "path"},
@@ -205,8 +295,20 @@ def main():
     ))
     if args.mode == "inventory":
         print(json.dumps(inventory(s3, client), indent=2))
-    else:
+    elif args.mode == "export":
         export(s3, client, json.load(sys.stdin), sys.stdout.buffer)
+    elif args.mode == "restore":
+        manifest = json.loads(sys.stdin.buffer.readline())
+        print(json.dumps(restore_objects(s3, client, manifest, sys.stdin.buffer), indent=2))
+    else:
+        manifest = json.load(sys.stdin)
+        validate_manifest(manifest)
+        model = model_identity(client)
+        if model != manifest["model"]:
+            raise RuntimeError("Restored Registry identity differs from the snapshot.")
+        result = {"model": model, **check_objects(s3, manifest)}
+        result["registered_models"] = [item.name for item in client.search_registered_models(max_results=100)]
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

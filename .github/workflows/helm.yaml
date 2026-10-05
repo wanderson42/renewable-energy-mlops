@@ -16,6 +16,8 @@ on:
       - "scripts/backup-repro.sh"
       - "scripts/snapshot-repro-objects.py"
       - "tests/infra/test_repro_snapshot.py"
+      - "scripts/restore-repro.sh"
+      - "tests/infra/test_repro_restore.py"
       - "Makefile"
   pull_request:
     branches: [main]
@@ -32,6 +34,8 @@ on:
       - "scripts/backup-repro.sh"
       - "scripts/snapshot-repro-objects.py"
       - "tests/infra/test_repro_snapshot.py"
+      - "scripts/restore-repro.sh"
+      - "tests/infra/test_repro_restore.py"
       - "Makefile"
 
 permissions:
@@ -68,3 +72,7 @@ jobs:
         run: bash -n scripts/backup-repro.sh
       - name: Test snapshot integrity and backup isolation with fake clients
         run: python -m unittest discover -s tests/infra -p test_repro_snapshot.py -v
+      - name: Check restore shell syntax
+        run: bash -n scripts/restore-repro.sh
+      - name: Test destination-only restore with fake clients
+        run: python -m unittest discover -s tests/infra -p test_repro_restore.py -v

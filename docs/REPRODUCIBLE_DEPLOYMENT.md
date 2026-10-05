@@ -158,7 +158,8 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [ ] Serving habilitado e validado após a restauração no cluster separado.
 - [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
 - [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
-- [ ] Snapshot de metadata e artefatos restaurado e identidade do modelo verificada.
+- [x] Snapshot de metadata e conteúdo dos dois buckets capturado e verificado.
+- [ ] Snapshot restaurado e identidade do modelo verificada no destino.
 - [ ] Gate HTTP e smoke de referência aprovados no destino.
 - [x] Terraform instala a release e um novo plano após o apply não apresenta mudanças.
 - [ ] Atualização por digest e rollback exercitados com validação.
@@ -523,9 +524,98 @@ causa antes de repetir. O script não remove backups anteriores nem limpa dados.
 
 Os testes de snapshot exercitam exportação e verificação com clientes simulados,
 rejeição de corrupção, alterações durante a cópia, arquivos incompletos e
-isolamento dos comandos. A captura real e a restauração continuam pendentes até
-a execução na máquina de origem. A verificação do backup não substitui um teste
-de restauração e inferência no destino.
+isolamento dos comandos. A captura real concluída está registrada na seção
+seguinte. A verificação do backup não substitui um teste de restauração e
+inferência no destino.
+
+## 11. Snapshot capturado e restauração no ensaio
+
+O operador concluiu o backup `snapshot-20261005T201656Z.LOW70R`, com verificação
+em `2026-10-05T20:17:08.561351+00:00`. Os 251 objetos preservam os mesmos totais
+do preflight. O dump tem 167.563 bytes, e o TAR dos objetos tem 1.830.041.600
+bytes, incluindo seu manifesto e padding. A evidência pública contém somente
+metadata e hashes em
+[`evidence/snapshot_capture_2026-10-05.json`](evidence/snapshot_capture_2026-10-05.json).
+Os arquivos permanecem privados na máquina do operador.
+
+A captura passou nos hashes, no parsing do dump e nas comparações de listing e
+identidade da origem. A ausência de escritores concorrentes continua sendo
+uma precondição operacional, não uma propriedade demonstrada pelos hashes.
+
+### Preparar o restore
+
+O target `repro-restore` usa `.repro/latest-snapshot`, confere que o caminho
+pertence ao diretório deste ensaio, rejeita `INCOMPLETE` e compara os arquivos
+com os hashes já registrados. Não recalcula um novo resumo para aceitar um
+backup alterado. A validação também relê os hashes dos objetos dentro do TAR.
+
+Antes de escrever no destino, ele exige:
+
+- node `energy-mlops-repro-control-plane` no kubeconfig dedicado;
+- API ausente no namespace `energy-mlops-repro`;
+- Registry e buckets sem dados de aplicação;
+- zero Runs, Registered Models, Model Versions, Logged Models e experimentos
+  adicionais ao experimento padrão no banco do ensaio.
+
+O SQL de preflight verifica o backend MLflow `3.16.1`, com os nomes de tabelas
+correspondentes a essa versão. Este é um procedimento para a primeira
+restauração em um destino vazio, não um mecanismo de sincronização contínua.
+
+Executar na raiz do projeto:
+
+```bash
+poetry run python -m unittest discover -s tests/infra -p test_repro_restore.py -v
+make repro-restore
+```
+
+### O que será alterado
+
+Somente os dados e a suspensão temporária do MLflow no ensaio:
+
+1. Criar os dois buckets se ainda não existirem.
+2. Restaurar as mesmas keys e bytes, preservando os headers de conteúdo e
+   metadata capturados. Cada objeto é validado antes do upload; o PUT usa
+   `IfNoneMatch=*` para recusar sobrescrita de uma key existente.
+3. Relê-los no destino para confirmar todos os hashes.
+4. Suspender o MLflow do ensaio em zero réplicas e aguardar seus pods encerrarem.
+5. Restaurar o dump no PostgreSQL do ensaio, com `--clean --if-exists` para
+   substituir o schema vazio criado pelo bootstrap e `--single-transaction`
+   para aplicar o restore do banco integralmente ou fazer rollback em erro.
+6. Retornar o MLflow do ensaio a uma réplica e aguardar o rollout.
+7. Verificar a identidade do champion, os URIs e novamente os hashes dos objetos
+   usando o backend restaurado; conferir a API de origem.
+
+As chamadas que alteram recursos Kubernetes ou restauram SQL usam exclusivamente
+`.repro/kubeconfig`, contexto `kind-energy-mlops-repro` e namespace
+`energy-mlops-repro`. A criação e cópia de objetos usam o endpoint interno do
+RustFS desse mesmo namespace. O Terraform permanece responsável pela release;
+a suspensão temporária do processo é uma operação de restauração de dados e
+retorna ao estado declarado de uma réplica quando concluída.
+
+O upload usa um arquivo temporário por objeto no contêiner MLflow, com checagem
+de espaço para o maior objeto e reserva de 64 MiB. O TAR não é extraído para
+caminhos baseados nas keys. O conjunto inteiro não precisa caber em RAM ou no
+filesystem do contêiner.
+
+### Resultado esperado e falhas
+
+O resumo fica em `.repro/restored-data.json`. Esperamos v17, a Run histórica,
+o mesmo Logged Model/URI e 251 objetos com 1.829.741.640 bytes verificados.
+A API do destino continua desabilitada: carregar o modelo e exercitar a
+inferência serão os gates seguintes. Não há promoção, treino ou novo registro.
+
+Os scripts não removem dados em caso de erro. Uma falha antes de restaurar o
+banco pode deixar objetos parcialmente copiados. Uma falha na fase do banco
+pode deixar o MLflow do ensaio suspenso; o restore SQL é transacional. Inspecione
+a fase e os dados antes de repetir. Um destino já preenchido será recusado,
+inclusive depois de uma restauração bem-sucedida. Não executar limpeza manual
+ou novo restore sobre esse destino sem definir sua recuperação.
+
+Os sete testes novos verificam hashes no destino, prevenção de sobrescrita,
+rejeição de snapshot alterado, rejeição de node incorreto ou banco não vazio,
+escopo das operações de escala/SQL e comportamento em falha. São testes com
+clientes simulados; a restauração real permanece pendente até o operador
+executar o target.
 
 ## Referências do projeto
 
