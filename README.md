@@ -427,8 +427,10 @@ restauração, serving pareado da v17 e recuperação declarativa de uma falha d
 pull, com PVCs preservados e plano final sem mudanças. O runtime MLflow foi
 empacotado, publicado no GHCR e validado no ensaio por digest, com Registry e
 leitura/hash de artefato aprovados. `make repro-client` prepara Prefect e dashboard
-em portas e estado próprios, usando o ambiente Poetry; sua validação integrada
-e visual no ensaio está pendente. O blueprint AWS segue em andamento. O escopo, as evidências
+em portas e estado próprios, usando o ambiente Poetry. O primeiro startup confirmou
+SDKs, modelo e artefato; o operador informou que o dashboard funcionou. A correção
+da autenticação vazia que afetou a UI Prefect aguarda validação no host.
+O blueprint AWS segue em andamento. O escopo, as evidências
 e os critérios de aceitação estão em
 [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
 

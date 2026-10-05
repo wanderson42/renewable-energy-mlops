@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +43,8 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(env["MLFLOW_TRACKING_URI"], "http://127.0.0.1:15000")
         self.assertEqual(env["RUSTFS_ENDPOINT"], "http://127.0.0.1:19000")
         self.assertEqual(env["PREFECT_API_URL"], "http://127.0.0.1:14200/api")
-        self.assertEqual(env["PREFECT_API_KEY"], "")
+        for key in ("PREFECT_API_KEY", "PREFECT_API_AUTH_STRING", "PREFECT_SERVER_API_AUTH_STRING"):
+            self.assertNotIn(key, env)
         self.assertNotIn("PREFECT_UNKNOWN_SETTING", env)
         self.assertNotIn("AWS_PROFILE", env)
         self.assertNotIn("AWS_SESSION_TOKEN", env)
@@ -130,6 +133,60 @@ class ClientTests(unittest.TestCase):
     def test_early_child_exit_interrupts_gate(self):
         with self.assertRaisesRegex(RuntimeError, "Processo dashboard terminou"):
             MODULE.require_children_alive([("dashboard", Mock(poll=Mock(return_value=1)))])
+
+    def test_effective_empty_auth_is_rejected_even_when_health_could_pass(self):
+        api_url = MODULE.urls()["prefect"] + "/api"
+        database = "sqlite+aiosqlite:///" + str(self.root / ".repro/client/prefect/orchestration.db")
+        settings = SimpleNamespace(home=self.root / ".repro/client/prefect",
+                                   api=SimpleNamespace(url=api_url, key=None, auth_string=None),
+                                   server=SimpleNamespace(api=SimpleNamespace(auth_string=None),
+                                       ui=SimpleNamespace(api_url=api_url),
+                                       database=SimpleNamespace(connection_url=Mock(get_secret_value=lambda: database))))
+        MODULE.check_prefect_settings(settings)
+        for value in ("", "user:secret"):
+            settings.server.api.auth_string = value
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "Autenticação"):
+                MODULE.check_prefect_settings(settings)
+        settings.server.api.auth_string = None
+        settings.server.ui.api_url = "http://localhost:4200/api"
+        with self.assertRaisesRegex(RuntimeError, "não está isolada"):
+            MODULE.check_prefect_settings(settings)
+
+    def test_ui_gate_checks_live_config_and_read_only_count_without_auth_header(self):
+        target = MODULE.urls()["prefect"]
+        with patch.object(MODULE, "fetch", side_effect=[{"api_url": target + "/api", "auth": None}, 0]) as fetch:
+            result = MODULE.check_prefect_ui()
+        self.assertEqual(result["flow_runs_count"], 0)
+        self.assertEqual(fetch.call_args_list, [unittest.mock.call(target + "/ui-settings", True),
+                                               unittest.mock.call(target + "/api/flow_runs/count", True, payload={})])
+        self.assertEqual(result["browser_e2e"], "not exercised by this gate")
+
+    def test_ui_gate_rejects_wrong_endpoint_auth_and_unauthorized_data_query(self):
+        target = MODULE.urls()["prefect"]
+        for settings in ({"api_url": "http://localhost:4200/api", "auth": None},
+                         {"api_url": target + "/api", "auth": "BASIC"}):
+            with patch.object(MODULE, "fetch", return_value=settings) as fetch, self.assertRaises(RuntimeError):
+                MODULE.check_prefect_ui()
+            self.assertEqual(fetch.call_count, 1)
+        unauthorized = HTTPError(target + "/api/flow_runs/count", 401, "Unauthorized", {}, None)
+        with patch.object(MODULE, "fetch", side_effect=[{"api_url": target + "/api", "auth": None}, unauthorized]), \
+             self.assertRaises(HTTPError):
+            MODULE.check_prefect_ui()
+
+    def test_count_transport_posts_json_without_authorization(self):
+        response = io.BytesIO(b"0")
+        response.status = 200
+        opener = Mock()
+        opener.open.return_value = response
+        target = MODULE.urls()["prefect"] + "/api/flow_runs/count"
+        with patch.object(MODULE, "build_opener", return_value=opener):
+            self.assertEqual(MODULE.fetch(target, True, payload={}), 0)
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, target)
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(json.loads(request.data), {})
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        self.assertIsNone(request.get_header("Authorization"))
 
 
 if __name__ == "__main__":

@@ -56,7 +56,8 @@ def child_environment(user, password):
                 "PREFECT_PROFILE": "repro", "PREFECT_API_URL": target["prefect"] + "/api",
                 "PREFECT_UI_URL": target["prefect"], "PREFECT_SERVER_UI_API_URL": target["prefect"] + "/api",
                 "PREFECT_SERVER_DATABASE_CONNECTION_URL": database, "PREFECT_API_DATABASE_CONNECTION_URL": database,
-                "PREFECT_API_KEY": "", "PREFECT_API_AUTH_STRING": "", "PREFECT_SERVER_API_AUTH_STRING": "",
+                # Empty auth strings are NOT disabled auth in Prefect 3.8.6.
+                # Leave these keys absent; the effective-settings gate checks None.
                 "PREFECT_SERVER_API_HOST": "127.0.0.1", "PREFECT_SERVER_API_PORT": str(PORTS["prefect"]),
                 "PREFECT_SERVER_UI_ENABLED": "true", "PREFECT_SERVER_EPHEMERAL_ENABLED": "false",
                 "PREFECT_SERVER_ANALYTICS_ENABLED": "false", "STREAMLIT_BROWSER_GATHER_USAGE_STATS": "false"})
@@ -88,11 +89,42 @@ def require_free_ports():
             listener.close()
 
 
-def fetch(url, json_response=False):
-    with build_opener(ProxyHandler({})).open(Request(url), timeout=3) as response:
+def fetch(url, json_response=False, payload=None):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {} if data is None else {"Content-Type": "application/json"}
+    with build_opener(ProxyHandler({})).open(Request(url, data=data, headers=headers), timeout=3) as response:
         if response.status != 200:
             raise RuntimeError("HTTP não retornou 200.")
         return json.load(response) if json_response else response.read()
+
+
+def check_prefect_settings(prefect):
+    target = urls()["prefect"]
+    expected_home = ROOT / ".repro/client/prefect"
+    expected_db = "sqlite+aiosqlite:///" + str(expected_home / "orchestration.db")
+    database = prefect.server.database.connection_url
+    if (Path(prefect.home).resolve() != expected_home or prefect.api.url != target + "/api"
+            or prefect.server.ui.api_url != target + "/api"
+            or database is None or database.get_secret_value() != expected_db):
+        raise RuntimeError("Configuração efetiva do Prefect não está isolada.")
+    # The server tests `is not None`, whereas /health bypasses authentication.
+    if any(value is not None for value in (prefect.api.key, prefect.api.auth_string,
+                                           prefect.server.api.auth_string)):
+        raise RuntimeError("Autenticação Prefect definida no ensaio; verifique a configuração local sem publicar segredos.")
+
+
+def check_prefect_ui():
+    target = urls()["prefect"]
+    settings = fetch(target + "/ui-settings", True)
+    if settings.get("api_url") != target + "/api" or settings.get("auth") is not None:
+        raise RuntimeError("Configuração HTTP da UI Prefect diverge do ensaio sem autenticação.")
+    # This POST is a read-only count query, not a flow run creation.
+    count = fetch(target + "/api/flow_runs/count", True, payload={})
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise RuntimeError("Consulta de dados Prefect retornou uma contagem inválida.")
+    return {"api_url": settings["api_url"], "auth": None,
+            "flow_runs_count": count, "data_query_http_status": 200,
+            "browser_e2e": "not exercised by this gate"}
 
 
 def require_children_alive(children):
@@ -227,14 +259,12 @@ def probe():
         raise RuntimeError("Endpoints efetivos da aplicação fora do ensaio.")
     prefect = get_current_settings()
     expected_home = ROOT / ".repro/client/prefect"
-    expected_db = "sqlite+aiosqlite:///" + str(expected_home / "orchestration.db")
-    if (Path(prefect.home).resolve() != expected_home or prefect.api.url != target["prefect"] + "/api"
-            or prefect.server.database.connection_url.get_secret_value() != expected_db):
-        raise RuntimeError("Configuração efetiva do Prefect não está isolada.")
+    check_prefect_settings(prefect)
     for url in (target["mlflow"] + "/health", target["prefect"] + "/api/health", target["dashboard"] + "/_stcore/health"):
         fetch(url)
     if not (expected_home / "orchestration.db").is_file():
         raise RuntimeError("Banco SQLite do Prefect não encontrado no diretório do ensaio.")
+    prefect_ui = check_prefect_ui()
     health = fetch(target["api"] + "/health", True)
     if health.get("status") != "healthy" or health.get("model_loaded") is not True:
         raise RuntimeError("API do ensaio sem modelo saudável.")
@@ -269,6 +299,7 @@ def probe():
                       "model": info, "registry_run_verified": True, "buckets_accessible": ["energy-lake", "mlflow-artifacts"],
                       "artifact": {"key": key, "bytes": len(data), "sha256": expected["sha256"]},
                       "prefect_database": ".repro/client/prefect/orchestration.db", "prefect_settings_isolated": True,
+                      "prefect_ui": prefect_ui,
                       "dashboard_health_http_status": 200, "dashboard_browser_e2e": "not exercised by this gate",
                       "scope": "local services, effective app settings and read-only client integrations"}, indent=2))
 

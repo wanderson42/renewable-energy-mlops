@@ -1,0 +1,39 @@
+{
+  "implementation_revision": "a14b9c7829d487c710f1d1b8a11d722d3b29bace",
+  "validated_at": "2026-10-05T23:39:56.781496+00:00",
+  "evidence_source": "operator supplied startup receipt and browser observation",
+  "context": "kind-energy-mlops-repro",
+  "namespace": "energy-mlops-repro",
+  "python": "3.14.4",
+  "packages": {
+    "prefect": "3.8.6",
+    "streamlit": "1.64.0",
+    "mlflow": "3.16.1",
+    "boto3": "1.43.75",
+    "botocore": "1.43.75",
+    "s3fs": "2026.9.0"
+  },
+  "lock_versions_match": true,
+  "model": {
+    "name": "ensemble_lgb_xgb_rf_bahia",
+    "alias": "champion",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37"
+  },
+  "registry_run_verified": true,
+  "buckets_accessible": ["energy-lake", "mlflow-artifacts"],
+  "artifact": {
+    "key": "6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts/MLmodel",
+    "bytes": 2015,
+    "sha256": "aa618a9ed0f5abc00af614b175cd44ef048a383dc4b4954fdb920c566632a662"
+  },
+  "prefect_settings_isolated": true,
+  "prefect_api_health_passed": true,
+  "prefect_database_file_present": true,
+  "dashboard_health_http_status": 200,
+  "dashboard_browser_observation": "operator reported dashboard working; individual interactions not documented",
+  "prefect_browser_observation": "error screen at /v2/dashboard: Something went wrong",
+  "prefect_ui_data_query_gate": "not included in original startup gate",
+  "fix_host_validation": "pending",
+  "scope": "first real client startup; does not claim successful Prefect browser E2E"
+}

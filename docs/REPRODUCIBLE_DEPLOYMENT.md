@@ -1074,7 +1074,8 @@ O launcher [`scripts/repro-client.py`](../scripts/repro-client.py) mantém os
 clientes em **primeiro plano**, no Python do host para a supervisão e no
 ambiente Poetry para os serviços e SDKs. Não altera o chart, Terraform ou
 o deployment existente. Esta seção descreve o procedimento preparado;
-a execução integrada e a interação no navegador ainda precisam de evidência.
+a execução original foi exercitada pelo operador (seção 20); a correção do
+acesso à UI Prefect ainda precisa de validação no host.
 
 | Serviço do ensaio | Endereço local | Origem |
 |---|---|---|
@@ -1122,11 +1123,16 @@ O comando aguarda os serviços e executa um probe dentro do Poetry. Ele verifica
 1. Python `3.14` e versões de Prefect, Streamlit, MLflow, boto3, botocore e
    s3fs iguais ao lockfile.
 2. Endpoints efetivos da aplicação e settings do Prefect apontando para o
-   ensaio, além da existência do SQLite no diretório privado.
+   ensaio, além da existência do SQLite no diretório privado. Os campos de
+   autenticação Prefect devem ser `None`; string vazia também é rejeitada.
 3. HTTP saudável dos serviços, modelo carregado na API e identidade da
    v17/Run histórica em `/model-info`, Registry e consulta da Run.
 4. Acesso aos dois buckets e leitura de um `MLmodel`, comparando tamanho e
    SHA-256 com o manifesto do restore; reconfirmação da identidade da API.
+5. Configuração viva de `/ui-settings` com a API do ensaio e sem auth, seguida
+   de `POST /api/flow_runs/count` com `{}`: consulta somente de leitura no banco
+   Prefect, sem header de autenticação. A contagem zero é válida para o banco
+   novo. Essas consultas detectam falhas que `/api/health` não detecta.
 
 O probe não grava no Registry, PostgreSQL ou RustFS. O próprio Prefect mantém
 seu estado operacional no SQLite local. A inicialização também não executa
@@ -1165,11 +1171,52 @@ os targets históricos usam encerramento global por padrão de processo e podem
 interromper os novos servidores Prefect/Streamlit. O launcher do ensaio não
 chama esses targets.
 
-Oito testes sem cluster verificam overrides sem mutar o ambiente pai, alvo
+Doze testes sem cluster verificam overrides sem mutar o ambiente pai, alvo
 explícito, bloqueios de porta/node incorretos, encerramento dos grupos próprios,
-limpeza após falha e proteção dos logs/recibo. Esses testes também fazem parte
+limpeza após falha, proteção dos logs/recibo e rejeição de autenticação vazia,
+endpoint incorreto da UI ou resposta 401 na consulta de dados. Esses testes também fazem parte
 do workflow Helm. A etapa será consolidada após as verificações reais de
 startup, cliente e navegador; o blueprint AWS permanece uma frente posterior.
+
+## 20. Primeiro startup real e correção do acesso à UI Prefect
+
+Na revisão `a14b9c7`, os oito testes originais passaram no Poetry do operador.
+`make repro-client` produziu o recibo em `2026-10-05T23:39:56.781496+00:00`:
+Python `3.14.4`, seis versões iguais ao lockfile, v17/Run confirmada no serving
+e no Registry, acesso aos dois buckets e `MLmodel` com os mesmos 2.015 bytes e
+SHA-256 do restore. O SQLite do Prefect existia no diretório isolado. O operador
+informou que o dashboard funcionou, mas a UI Prefect em `14200/v2/dashboard`
+exibiu **Something went wrong**. Não houve evidência detalhada de cada interação
+do dashboard e a UI Prefect não está consolidada como validada.
+
+O launcher original definia `PREFECT_SERVER_API_AUTH_STRING=""`. No
+[código Prefect 3.8.6](https://github.com/PrefectHQ/prefect/blob/3.8.6/src/prefect/server/api/server.py),
+o middleware ativa autenticação quando o valor **não é `None`**, incluindo a
+string vazia. `/health` e `/ready` permitem probes sem autenticação; portanto,
+o health passou sem exercitar as consultas de dados que a UI utiliza. A UI
+também anuncia o método de auth por truthiness, que trata a string vazia como
+falsa. Esse erro de configuração explica a falha esperada nas consultas sem
+Authorization; a captura do operador não registra os códigos HTTP dessas
+consultas. A correção ainda deve ser confirmada em execução.
+
+A correção deixa os três campos de auth ausentes do ambiente filho
+(`PREFECT_API_KEY`, `PREFECT_API_AUTH_STRING`, `PREFECT_SERVER_API_AUTH_STRING`),
+mantendo a filtragem dos valores Prefect herdados e o perfil separado. O gate
+agora exige `None` nos settings efetivos; se `.env`, TOML ou perfil local definir
+auth, ele interrompe sem exibir segredos. Também verifica os settings HTTP da UI
+e a consulta de contagem sem Authorization. Não modifica o banco, lockfile,
+histórico da origem ou dados do restore.
+
+Para validar a correção, encerrar o launcher anterior com `Ctrl+C`, atualizar
+a branch, repetir os doze testes e iniciar `make repro-client` novamente.
+O novo recibo precisa incluir `prefect_ui.data_query_http_status=200`; depois,
+reabrir `http://127.0.0.1:14200/v2/dashboard` e repetir a navegação. Um dashboard
+Prefect sem runs é esperado neste banco novo; isso não significa indisponibilidade.
+Se continuar falhando, conservar o SQLite e diagnosticar as respostas HTTP/logs,
+sem executar reset do banco ou alterar o ambiente operacional da v0.3.
+
+Evidência do primeiro startup, separada do resultado ainda pendente da correção:
+[`evidence/client_startup_2026-10-05.json`](evidence/client_startup_2026-10-05.json).
 
 ## Referências do projeto
 
