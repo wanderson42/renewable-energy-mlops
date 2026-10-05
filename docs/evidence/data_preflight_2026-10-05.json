@@ -1,0 +1,94 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied make repro-inventory, current-context and source model-info output",
+  "origin": {
+    "recorded_at": "2026-10-05T19:58:30.400949+00:00",
+    "context": "kind-energy-mlops",
+    "namespace": "default",
+    "registered_models": [
+      "ensemble_lgb_xgb_bahia",
+      "ensemble_lgb_xgb_rf_bahia"
+    ],
+    "model": {
+      "name": "ensemble_lgb_xgb_rf_bahia",
+      "alias": "champion",
+      "version": 17,
+      "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+      "source": "models:/m-b5741525f9ce41c98d166288955e9f6b",
+      "download_uri": "s3://mlflow-artifacts/6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts",
+      "run_artifact_uri": "s3://mlflow-artifacts/6/1d13a61244c54f06aa70f43a9993ea37/artifacts"
+    },
+    "buckets": {
+      "energy-lake": {
+        "present": true,
+        "objects": 19,
+        "bytes": 20949616
+      },
+      "mlflow-artifacts": {
+        "present": true,
+        "objects": 232,
+        "bytes": 1808792024
+      }
+    },
+    "additional_buckets": [],
+    "runtime": {
+      "python": "3.11.15",
+      "packages": {
+        "mlflow": "3.16.1",
+        "boto3": "1.43.96",
+        "botocore": "1.43.96",
+        "psycopg2-binary": "2.9.13",
+        "s3transfer": "0.19.2",
+        "jmespath": "1.1.0",
+        "urllib3": "2.8.0",
+        "python-dateutil": "2.9.0.post0",
+        "six": "1.17.0"
+      }
+    }
+  },
+  "destination": {
+    "recorded_at": "2026-10-05T19:58:31.941249+00:00",
+    "context": "kind-energy-mlops-repro",
+    "namespace": "energy-mlops-repro",
+    "registered_models": [],
+    "model": null,
+    "buckets": {
+      "energy-lake": {
+        "present": false,
+        "objects": 0,
+        "bytes": 0
+      },
+      "mlflow-artifacts": {
+        "present": false,
+        "objects": 0,
+        "bytes": 0
+      }
+    },
+    "additional_buckets": [],
+    "runtime": {
+      "python": "3.11.15",
+      "packages": {
+        "mlflow": "3.16.1",
+        "boto3": "1.43.96",
+        "botocore": "1.43.96",
+        "psycopg2-binary": "2.9.13",
+        "s3transfer": "0.19.2",
+        "jmespath": "1.1.0",
+        "urllib3": "2.8.0",
+        "python-dateutil": "2.9.0.post0",
+        "six": "1.17.0"
+      }
+    },
+    "image_ids": {
+      "mlflow": "ghcr.io/mlflow/mlflow@sha256:6af326440af64565c2ea5d1d28c9ee355f70a8d4af5b76e35938365e1ce2e428",
+      "postgres": "docker.io/library/postgres@sha256:4689940c683801b4ab839ab3b0a0a3555a5fe425371422310944e89eca7d8068",
+      "rustfs": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c"
+    }
+  },
+  "origin_api_identity_preserved": true,
+  "validation_limits": [
+    "Read-only inventory; no snapshot captured or restored",
+    "Counts and byte totals are not content hashes",
+    "Data inventory is not an atomic snapshot across PostgreSQL and S3"
+  ]
+}

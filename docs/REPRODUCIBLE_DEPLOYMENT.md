@@ -160,7 +160,7 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
 - [ ] Snapshot de metadata e artefatos restaurado e identidade do modelo verificada.
 - [ ] Gate HTTP e smoke de referência aprovados no destino.
-- [ ] Terraform instala a release e reaplicação não produz mudanças inesperadas.
+- [x] Terraform instala a release e um novo plano após o apply não apresenta mudanças.
 - [ ] Atualização por digest e rollback exercitados com validação.
 - [ ] Automação de deployment executada de ponta a ponta.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
@@ -401,8 +401,9 @@ A evidência está em
 [`evidence/terraform_bootstrap_2026-10-05.json`](evidence/terraform_bootstrap_2026-10-05.json).
 
 Esse marco comprova o provisionamento real da infraestrutura pelo Terraform.
-Ainda não comprova reaplicação sem mudanças, conteúdo dos buckets, restauração
-do Registry ou equivalência de inferência. A API permanece desabilitada.
+Um segundo plano apresentou `No changes`, e os dois testes Terraform com mocks
+passaram na máquina do operador. A restauração do Registry e a equivalência de
+inferência ainda não foram demonstradas. A API permanece desabilitada.
 O critério de aceitação da instalação do sistema completo continua pendente
 até o serving também ser exercitado.
 
@@ -441,6 +442,90 @@ identificadores e os caminhos referenciados pelo MLflow. Os PVCs da origem não
 serão conectados ao ensaio. Uma captura consistente também exige definir um
 intervalo sem escritores concorrentes; essa condição será estabelecida antes
 do backup, sem assumir que DB e object storage têm snapshot transacional comum.
+
+## 10. Preflight confirmado e captura do snapshot
+
+O inventário real confirmou que o destino tem Registry vazio e ainda não possui
+os buckets de aplicação. O runtime MLflow é igual ao da origem nas nove versões
+coletadas, e os três image IDs do ensaio correspondem aos digests do baseline.
+O contexto operacional e a identidade servida pela API de origem foram
+preservados. A evidência está em
+[`evidence/data_preflight_2026-10-05.json`](evidence/data_preflight_2026-10-05.json).
+
+| Bucket na origem | Objetos | Bytes |
+|---|---:|---:|
+| `energy-lake` | 19 | 20.949.616 |
+| `mlflow-artifacts` | 232 | 1.808.792.024 |
+| Total | 251 | 1.829.741.640 |
+
+A v17 aponta para o Logged Model `m-b5741525f9ce41c98d166288955e9f6b`.
+Seus artefatos estão em
+`s3://mlflow-artifacts/6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts`,
+enquanto os artefatos da Run têm outro prefixo. A captura preserva o banco inteiro
+e o conteúdo atual dos dois buckets, incluindo esse Logged Model e as demais
+versões presentes, sem registrar novamente o champion.
+
+### Condição para a captura
+
+Execute em um intervalo sem escritores concorrentes: nenhum treino, promoção,
+ingestão, monitoring que exporte dados, limpeza ou alteração manual deve gravar
+no MLflow/RustFS durante a captura. A API pode continuar atendendo inferências.
+O script não pausa tarefas Prefect nem altera serviços da origem.
+
+`pg_dump` produz um snapshot consistente do banco individualmente. PostgreSQL e
+S3 não têm uma transação comum. O intervalo sem escritores é a condição
+operacional para capturá-los juntos; as comparações de listing e identidade
+antes/depois ajudam a detectar alterações, mas não comprovam a ausência de toda
+mutação transitória ou de mudanças somente no banco.
+
+### Capturar e verificar
+
+Na raiz do projeto:
+
+```bash
+make repro-backup
+```
+
+O target usa contexto explícito para todas as chamadas Kubernetes. Ele refaz o
+preflight, confirma o destino vazio e grava um novo diretório privado em
+`.repro/snapshots/`. Em seguida:
+
+1. Lista keys, tamanhos, ETags e datas dos objetos da origem, confirmando o
+   `MLmodel` no prefixo da v17.
+2. Usa o `pg_dump` do próprio PostgreSQL de origem para criar `postgres.dump`
+   em formato custom, com schema e dados.
+3. Lê os objetos S3 em fluxo e grava `objects.tar`, com metadata e SHA256 por
+   objeto. Não precisa guardar o conjunto inteiro em RAM ou no filesystem do
+   contêiner MLflow.
+4. Compara novamente o listing e a identidade do modelo. Se houver mudança,
+   interrompe o backup antes de finalizar seu manifesto.
+5. Usa `pg_restore --file=/dev/null` para ler/descomprimir o dump e gerar SQL
+   descartado, sem conectar ao banco nem executar SQL.
+6. Confere a identidade da API de origem e valida os hashes dos objetos no host.
+7. Grava `summary.json`, `SHA256SUMS` e o caminho em `.repro/latest-snapshot`.
+
+A validação no host utiliza a biblioteca padrão de `python3`. As chamadas S3
+utilizam boto3 dentro do servidor MLflow, com as credenciais já configuradas no
+contêiner. O ambiente Poetry da aplicação permanece como estava.
+
+O script exige espaço livre para o tamanho listado dos objetos mais uma reserva
+de 2 GiB para o banco. Esse limite não substitui a verificação do espaço quando
+os dados crescerem. O arquivo TAR é sem compressão; o dump custom do banco usa
+a compressão padrão do PostgreSQL.
+
+Não há gravação no banco/object storage de origem ou destino nessa etapa.
+Os backups contêm dados e metadata privados: `.repro/` permanece ignorado pelo
+Git. Envie somente a saída textual e o resumo, preservando os arquivos na máquina.
+
+Se a captura falhar, o diretório mantém o marcador `INCOMPLETE` e os arquivos
+parciais, sem atualizar o caminho do último snapshot concluído. Inspecione a
+causa antes de repetir. O script não remove backups anteriores nem limpa dados.
+
+Os testes de snapshot exercitam exportação e verificação com clientes simulados,
+rejeição de corrupção, alterações durante a cópia, arquivos incompletos e
+isolamento dos comandos. A captura real e a restauração continuam pendentes até
+a execução na máquina de origem. A verificação do backup não substitui um teste
+de restauração e inferência no destino.
 
 ## Referências do projeto
 

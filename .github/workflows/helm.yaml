@@ -13,6 +13,9 @@ on:
       - "tests/infra/test_create_repro_cluster.py"
       - "scripts/inventory-repro-data.*"
       - "tests/infra/test_repro_data_inventory.py"
+      - "scripts/backup-repro.sh"
+      - "scripts/snapshot-repro-objects.py"
+      - "tests/infra/test_repro_snapshot.py"
       - "Makefile"
   pull_request:
     branches: [main]
@@ -26,6 +29,9 @@ on:
       - "tests/infra/test_create_repro_cluster.py"
       - "scripts/inventory-repro-data.*"
       - "tests/infra/test_repro_data_inventory.py"
+      - "scripts/backup-repro.sh"
+      - "scripts/snapshot-repro-objects.py"
+      - "tests/infra/test_repro_snapshot.py"
       - "Makefile"
 
 permissions:
@@ -58,3 +64,7 @@ jobs:
         run: bash -n scripts/inventory-repro-data.sh
       - name: Test restore preflight with read-only clients
         run: python -m unittest discover -s tests/infra -p test_repro_data_inventory.py -v
+      - name: Check backup shell syntax
+        run: bash -n scripts/backup-repro.sh
+      - name: Test snapshot integrity and backup isolation with fake clients
+        run: python -m unittest discover -s tests/infra -p test_repro_snapshot.py -v

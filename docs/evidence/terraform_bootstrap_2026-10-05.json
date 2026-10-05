@@ -17,20 +17,56 @@
     "resource": "helm_release.mlops"
   },
   "deployments": {
-    "mlflow": {"ready": 1, "desired": 1, "pod_restarts": 0},
-    "postgres": {"ready": 1, "desired": 1, "pod_restarts": 0},
-    "rustfs": {"ready": 1, "desired": 1, "pod_restarts": 0}
+    "mlflow": {
+      "ready": 1,
+      "desired": 1,
+      "pod_restarts": 0
+    },
+    "postgres": {
+      "ready": 1,
+      "desired": 1,
+      "pod_restarts": 0
+    },
+    "rustfs": {
+      "ready": 1,
+      "desired": 1,
+      "pod_restarts": 0
+    }
   },
   "volumes": {
-    "postgres-pvc": {"status": "Bound", "capacity": "2Gi", "storage_class": "standard", "access_mode": "RWO"},
-    "rustfs-pvc": {"status": "Bound", "capacity": "5Gi", "storage_class": "standard", "access_mode": "RWO"}
+    "postgres-pvc": {
+      "status": "Bound",
+      "capacity": "2Gi",
+      "storage_class": "standard",
+      "access_mode": "RWO"
+    },
+    "rustfs-pvc": {
+      "status": "Bound",
+      "capacity": "5Gi",
+      "storage_class": "standard",
+      "access_mode": "RWO"
+    }
   },
   "validation_limits": [
-    "Second plan after apply is pending; idempotence has not been demonstrated",
-    "Destination runtime image IDs and package inventory are pending",
-    "Registry and bucket inventories are pending",
     "No source PostgreSQL or object snapshot has been captured or restored",
     "Serving, model identity and inference have not been validated in the destination",
-    "The operational source has not been rechecked after this apply"
-  ]
+    "One post-apply plan demonstrated no changes; deployment updates and rollback remain untested"
+  ],
+  "post_apply_plan": {
+    "result": "No changes",
+    "source": "Operator-supplied make repro-plan output on 2026-10-05"
+  },
+  "terraform_mock_tests": {
+    "passed": 2,
+    "failed": 0,
+    "runs": [
+      "isolated_bootstrap",
+      "missing_credentials_rejected"
+    ]
+  },
+  "source_rechecked": {
+    "context": "kind-energy-mlops",
+    "champion_version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37"
+  }
 }
