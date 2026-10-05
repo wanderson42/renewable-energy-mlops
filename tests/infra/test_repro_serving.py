@@ -14,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("repro_serving", ROOT / "scripts/repro-serving.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+REVIEW_SPEC = importlib.util.spec_from_file_location("review_repro_plan", ROOT / "scripts/review-repro-plan.py")
+REVIEW = importlib.util.module_from_spec(REVIEW_SPEC)
+REVIEW_SPEC.loader.exec_module(REVIEW)
+TERRAFORM = shutil.which("terraform")
+if not TERRAFORM and os.access(ROOT / ".repro/bin/terraform", os.X_OK):
+    TERRAFORM = str(ROOT / ".repro/bin/terraform")
 
 
 def metadata():
@@ -28,7 +34,10 @@ def predictions():
 
 def plan():
     before = {"name": "energy-mlops-repro", "namespace": "energy-mlops-repro"}
-    return {"variables": {"api_enabled": {"value": True}}, "resource_changes": [
+    target = {"context": "kind-energy-mlops-repro", "namespace": "energy-mlops-repro",
+              "release": "energy-mlops-repro", "api_enabled": True}
+    return {"variables": {"api_enabled": {"value": "true"}},
+            "planned_values": {"outputs": {"deployment_target": {"value": target}}}, "resource_changes": [
         {"address": "helm_release.mlops", "change": {"actions": ["update"],
          "before": before, "after": {**before, "set": [{"name": "api.enabled", "value": "true"}]}}}
     ]}
@@ -120,6 +129,14 @@ class ServingDeploymentTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             MODULE.inspect_plan(changed)
 
+    def test_plan_checks_evaluated_boolean_output_instead_of_raw_cli_string(self):
+        MODULE.inspect_plan(plan())
+        for value in (False, "true", None):
+            changed = plan()
+            changed["planned_values"]["outputs"]["deployment_target"]["value"]["api_enabled"] = value
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                MODULE.inspect_plan(changed)
+
     def test_wrong_node_or_changed_live_registry_blocks_enablement(self):
         with patch.object(MODULE, "run", return_value="energy-mlops-control-plane"), self.assertRaises(RuntimeError):
             MODULE.check_target()
@@ -201,6 +218,7 @@ class PlanWrapperTests(unittest.TestCase):
             for name in ("scripts", ".repro/bin", "helm", "terraform/environments/local", "bin"):
                 (root / name).mkdir(parents=True, exist_ok=True)
             shutil.copy(ROOT / "scripts/plan-repro.sh", root / "scripts/plan-repro.sh")
+            shutil.copy(ROOT / "scripts/review-repro-plan.py", root / "scripts/review-repro-plan.py")
             (root / ".repro/kubeconfig").touch()
             (root / "helm/values_secrets.yaml").write_text("{}\n")
             (root / ".repro/deployment.tfvars.json").write_text('{"api_enabled": true}\n')
@@ -210,17 +228,25 @@ import json, os, sys
 from pathlib import Path
 with Path(os.environ["CALL_LOG"]).open("a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
+if "plan" in sys.argv:
+    print("RAW_FAKE_SECRET_KEEP_PRIVATE")
+    if os.environ.get("PLAN_FAIL"):
+        raise SystemExit(2)
+elif "show" in sys.argv:
+    print(os.environ["FAKE_PLAN_JSON"])
 ''')
             terraform.chmod(0o755)
             kubectl = root / "bin/kubectl"
             kubectl.write_text('#!/bin/sh\nprintf "%s" "${FAKE_NODE:-energy-mlops-repro-control-plane}"\n')
             kubectl.chmod(0o755)
             environment = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
-                           "CALL_LOG": str(root / "calls.jsonl")}
+                           "CALL_LOG": str(root / "calls.jsonl"), "FAKE_PLAN_JSON": json.dumps(plan())}
             for args in ([], ["--serving"]):
                 result = subprocess.run(["bash", str(root / "scripts/plan-repro.sh"), *args],
                                         env=environment, text=True, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("RAW_FAKE_SECRET_KEEP_PRIVATE", result.stdout + result.stderr)
+                self.assertIn("RAW_FAKE_SECRET_KEEP_PRIVATE", (root / ".repro/terraform-plan.log").read_text())
             calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
             plans = [args for args in calls if "plan" in args]
             self.assertEqual(len(plans), 2)
@@ -234,6 +260,67 @@ with Path(os.environ["CALL_LOG"]).open("a") as log:
                                     text=True, capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(len((root / "calls.jsonl").read_text().splitlines()), count)
+            result = subprocess.run(["bash", str(root / "scripts/plan-repro.sh"), "--serving"],
+                                    env={**environment, "PLAN_FAIL": "1"}, text=True,
+                                    capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("RAW_FAKE_SECRET_KEEP_PRIVATE", result.stdout + result.stderr)
+            self.assertIn("RAW_FAKE_SECRET_KEEP_PRIVATE", (root / ".repro/terraform-plan.log").read_text())
+            self.assertEqual((root / ".repro/terraform-plan.log").stat().st_mode & 0o777, 0o600)
+
+
+class PlanReviewTests(unittest.TestCase):
+    def test_review_omits_secrets_even_in_provider_metadata_and_unexpected_settings(self):
+        raw = plan()
+        raw["variables"]["password"] = {"value": "FAKE_PRIVATE_INPUT"}
+        for side in ("before", "after"):
+            resource = raw["resource_changes"][0]["change"][side]
+            resource["metadata"] = {"values": '{"password":"FAKE_PRIVATE_METADATA"}'}
+            resource["values"] = ["password: FAKE_PRIVATE_VALUES"]
+            resource.setdefault("set", []).append({"name": "postgres.password", "value": "FAKE_PRIVATE_SET"})
+        serialized = json.dumps(REVIEW.review(raw))
+        self.assertNotIn("FAKE_PRIVATE", serialized)
+        self.assertIn('"planned_api_enabled": true', serialized)
+        self.assertEqual(REVIEW.review(raw)["summary"], {"add": 0, "change": 1, "destroy": 0})
+
+    def test_no_change_summary_and_output_only_changes(self):
+        raw = plan()
+        raw["resource_changes"][0]["change"]["actions"] = ["no-op"]
+        self.assertTrue(REVIEW.review(raw)["no_changes"])
+        raw["output_changes"] = {"deployment_target": {"actions": ["update"]}}
+        self.assertFalse(REVIEW.review(raw)["no_changes"])
+
+    @unittest.skipUnless(TERRAFORM, "Terraform CLI needed for provider-free regression")
+    def test_real_terraform_evaluates_cli_and_json_var_file_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.tf").write_text('''variable "api_enabled" {
+  type = bool
+  default = false
+}
+output "deployment_target" {
+  value = {
+    context = "kind-energy-mlops-repro"
+    namespace = "energy-mlops-repro"
+    release = "energy-mlops-repro"
+    api_enabled = var.api_enabled
+  }
+}
+''')
+            (root / "enabled.tfvars.json").write_text('{"api_enabled": true}\n')
+            subprocess.run([TERRAFORM, f"-chdir={root}", "init", "-input=false"],
+                           capture_output=True, text=True, check=True, timeout=30)
+            for argument in ("-var=api_enabled=true", "-var-file=enabled.tfvars.json"):
+                with self.subTest(argument=argument):
+                    subprocess.run([TERRAFORM, f"-chdir={root}", "plan", "-input=false", argument, "-out=plan"],
+                                   capture_output=True, text=True, check=True, timeout=30)
+                    result = subprocess.run([TERRAFORM, f"-chdir={root}", "show", "-json", "plan"],
+                                            capture_output=True, text=True, check=True, timeout=30)
+                    evaluated = json.loads(result.stdout)
+                    # Helm provider unavailable here: attach an isolated update fixture.
+                    evaluated["resource_changes"] = plan()["resource_changes"]
+                    MODULE.inspect_plan(evaluated)
+                    self.assertIs(evaluated["planned_values"]["outputs"]["deployment_target"]["value"]["api_enabled"], True)
 
 
 if __name__ == "__main__":

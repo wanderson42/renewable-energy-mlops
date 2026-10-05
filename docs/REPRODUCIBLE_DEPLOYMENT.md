@@ -324,8 +324,9 @@ validada no ensaio, conforme a evidência de bootstrap abaixo.
 As credenciais são lidas do arquivo local já utilizado pelo projeto,
 `helm/values_secrets.yaml`. Ele deve conter `postgres.user`, `postgres.password`,
 `postgres.db`, `rustfs.rootUser` e `rustfs.rootPassword`, todos preenchidos.
-O arquivo não deve ser enviado nem incluído no Git. O plano oculta o conteúdo
-marcado como sensitive, mas state, plano binário e metadata da release Helm
+O arquivo não deve ser enviado nem incluído no Git. Marcar o input como sensitive
+não impede que credenciais reapareçam em `metadata.values` do provider Helm:
+isso foi observado no plano real. State, plano binário, metadata e logs brutos
 podem armazenar as credenciais. São arquivos privados do ensaio, não evidências
 publicáveis. O bootstrap protege `.repro/` e os scripts utilizam `umask 077`;
 não habilitar logs de debug nem publicar esses arquivos.
@@ -687,17 +688,51 @@ timestamp, payload e respostas. Para repetir somente o gate: `make repro-validat
 Um arquivo de resultado anterior comprova apenas seu timestamp; o exit code da
 execução atual determina se a nova validação passou.
 
-Onze testes novos verificam isolamento, preservação do estágio entre planos,
+Quinze testes de serving verificam isolamento, preservação do estágio entre planos,
 recusa de planos destrutivos, falha do apply, cleanup do port-forward e gates de
-identidade/inferência usando clientes simulados. O provider Terraform não inicia
-no runtime do editor; `fmt`, lint e testes Python foram verificados aqui, enquanto
-`validate`, os três testes Terraform com mocks e o serving real desta revisão
-devem ser executados na máquina do operador/CI.
-O JSON do plano é inspecionado em memória e não é impresso, pois contém valores
-sensíveis. Não publicar state, plano binário ou arquivos privados de `.repro/`.
+identidade/inferência, redação do resumo e avaliação de inputs pelo Terraform.
+O teste de avaliação usa um plano real sem providers e uma fixture da atualização
+Helm, sem cluster. Ele roda quando o CLI Terraform está disponível no PATH ou em
+`.repro/bin/terraform`; caso contrário, é marcado como skip.
+O provider Helm não inicia no runtime do editor, mas o operador já aprovou
+`validate` e os três testes Terraform com mocks na revisão `c6d8d09`.
+O serving real permanece pendente. O JSON do plano é inspecionado em memória e
+não é impresso integralmente, pois contém valores sensíveis. Não publicar state,
+plano binário ou arquivos privados de `.repro/`.
 O gate não executa treino, promoção ou reload. Não há rollback automático nesta
 etapa; falhas preservam os recursos para diagnóstico. O exercício de atualização
 por outro digest e recuperação continua pendente.
+
+## 13. Correção do review do plano e proteção da saída
+
+Na execução real de `c6d8d09`, os onze testes Python e os três testes Terraform
+passaram. O Terraform gerou um plano válido: atualização da mesma release,
+API `false -> true`, chart `0.1.3 -> 0.1.4` e zero criação/destruição de recursos
+Terraform. O wrapper recusou esse plano antes de aplicar.
+O erro estava na checagem Python: esperava booleano no input bruto do JSON.
+O Terraform `1.16.5` conserva `-var=api_enabled=true` como string nesse campo;
+o output avaliado é booleano. A correção verifica esse output, o destino e o
+setting final de Helm, preservando a recusa de instalação/substituição/destruição.
+A causa foi reproduzida com o CLI real, sem provider nem cluster.
+A evidência pública sanitizada está em
+[`evidence/serving_plan_review_2026-10-05.json`](evidence/serving_plan_review_2026-10-05.json).
+
+O plano também mostrou credenciais dentro de `metadata.values`, apesar da
+marcação sensitive no input. O procedimento passa a guardar o stdout/stderr
+bruto de plan e apply em `.repro/terraform-plan.log` e
+`.repro/terraform-apply.log`, com permissões privadas. A revisão pública usa
+somente campos permitidos: ações, contagens, confirmação de release/namespace,
+versão do chart, estágio da API, hash do chart e indicação de mudança nos inputs.
+Não imprime metadata nem conteúdo dos inputs, inclusive em falha do plan.
+Essa mudança não remove credenciais de snapshots/state/logs já existentes.
+Não publicar saídas brutas de `terraform plan`, `terraform show -json` ou logs
+do provider. Em caso de erro, inspecione os arquivos privados localmente e
+compartilhe somente o diagnóstico sanitizado.
+
+Após atualizar e rodar os quinze testes de serving, gere um novo
+`make repro-serving-plan`. O resumo deve continuar em `0/1/0` e confirmar o
+destino de ensaio e `api.enabled=true`. Depois, `make repro-serving-apply`
+executa o plano e o gate; `make repro-plan` deve retornar `No changes`.
 
 ## Referências do projeto
 

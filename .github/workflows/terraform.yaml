@@ -3,10 +3,10 @@ name: Terraform local validation
 on:
   push:
     branches: [main, "infra/**"]
-    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", ".github/workflows/terraform.yaml"]
+    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", "scripts/repro-serving.py", "scripts/review-repro-plan.py", "tests/infra/test_repro_serving.py", ".github/workflows/terraform.yaml"]
   pull_request:
     branches: [main]
-    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", ".github/workflows/terraform.yaml"]
+    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", "scripts/repro-serving.py", "scripts/review-repro-plan.py", "tests/infra/test_repro_serving.py", ".github/workflows/terraform.yaml"]
 
 permissions:
   contents: read
@@ -30,3 +30,5 @@ jobs:
         run: terraform test
       - name: Check local tooling shell syntax
         run: bash -n ../../../scripts/install-repro-terraform.sh ../../../scripts/plan-repro.sh
+      - name: Test plan review and real provider-free Terraform input evaluation
+        run: python3 -m unittest discover -s ../../../tests/infra -p test_repro_serving.py -v

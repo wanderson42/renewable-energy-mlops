@@ -1,0 +1,27 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied test and make repro-serving-plan output; sensitive provider metadata omitted",
+  "git_revision": "c6d8d099c0aedd6faf6b147ed68f1a3639c675ea",
+  "serving_unit_tests": {"passed": 11, "failed": 0},
+  "terraform_mock_tests": {"passed": 3, "failed": 0},
+  "terraform_validate": "passed",
+  "plan": {
+    "resource": "helm_release.mlops",
+    "action": "update in-place",
+    "release": "energy-mlops-repro",
+    "namespace": "energy-mlops-repro",
+    "added": 0,
+    "changed": 1,
+    "destroyed": 0,
+    "api_enabled": {"before": false, "after": true},
+    "chart_version": {"before": "0.1.3", "after": "0.1.4"}
+  },
+  "wrapper_result": "Rejected before apply due to incorrect assumption about the JSON type of a CLI variable",
+  "root_cause_reproduced": "Terraform 1.16.5 retains CLI input as string true in variables.api_enabled.value; evaluated output is boolean true",
+  "apply_executed": false,
+  "validation_limits": [
+    "Corrected wrapper still requires execution on the operator machine",
+    "Destination serving and inference remain pending",
+    "Raw Terraform plan metadata contained credentials; no raw log or credential content is included in this evidence"
+  ]
+}

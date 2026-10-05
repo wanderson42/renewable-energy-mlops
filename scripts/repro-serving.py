@@ -74,8 +74,14 @@ print(json.dumps({"name": m.name, "version": int(m.version), "run_id": m.run_id,
 
 def inspect_plan(plan):
     """Reject replacement, a bootstrap install or a plan for any other resource."""
-    if plan.get("errored") or plan.get("variables", {}).get("api_enabled", {}).get("value") is not True:
+    # CLI inputs can retain the string "true"; validate Terraform's evaluated output.
+    target = plan.get("planned_values", {}).get("outputs", {}).get("deployment_target", {}).get("value", {})
+    if plan.get("errored") or target.get("api_enabled") is not True:
         raise RuntimeError("O plano precisa habilitar explicitamente a API.")
+    if (target.get("context"), target.get("namespace"), target.get("release")) != (
+        "kind-energy-mlops-repro", "energy-mlops-repro", "energy-mlops-repro",
+    ):
+        raise RuntimeError("O output planejado não corresponde ao ensaio.")
     changes = plan.get("resource_changes", [])
     if len(changes) != 1:
         raise RuntimeError("Esperado apenas o recurso helm_release.mlops.")
@@ -112,7 +118,14 @@ def serving_apply():
     temporary.write_text(json.dumps({"api_enabled": True}) + "\n")
     temporary.chmod(0o600)
     temporary.replace(intent)
-    run(terraform("apply", "-input=false", str(ROOT / ".repro/serving.tfplan")), timeout=900)
+    print("Aplicando no ensaio. Log bruto privado: .repro/terraform-apply.log", flush=True)
+    apply_log = ROOT / ".repro/terraform-apply.log"
+    apply_log.touch(mode=0o600, exist_ok=True)
+    apply_log.chmod(0o600)
+    with apply_log.open("w") as log:
+        run(terraform("apply", "-input=false", str(ROOT / ".repro/serving.tfplan")),
+            stdout=log, stderr=subprocess.STDOUT, timeout=900)
+    print("Terraform apply concluído. Iniciando o gate de serving.", flush=True)
     validate_serving()
 
 

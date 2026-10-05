@@ -29,6 +29,14 @@ fi
 "$terraform_bin" -chdir="$terraform_root" fmt -check -recursive
 "$terraform_bin" -chdir="$terraform_root" init -input=false -lockfile=readonly
 "$terraform_bin" -chdir="$terraform_root" validate
-"$terraform_bin" -chdir="$terraform_root" plan -input=false \
-  "${plan_args[@]}" -out="$plan_file"
+echo "Gerando o plano; saída bruta privada em .repro/terraform-plan.log..."
+touch "$project_root/.repro/terraform-plan.log"
+chmod 600 "$project_root/.repro/terraform-plan.log"
+if ! "$terraform_bin" -chdir="$terraform_root" plan -input=false \
+  "${plan_args[@]}" -out="$plan_file" > "$project_root/.repro/terraform-plan.log" 2>&1; then
+  echo "Terraform plan falhou. Inspecione o log privado; não publique seu conteúdo bruto." >&2
+  exit 1
+fi
+"$terraform_bin" -chdir="$terraform_root" show -json "$plan_file" \
+  | python3 "$project_root/scripts/review-repro-plan.py"
 echo "Plano salvo em $plan_file. Nenhum workload foi aplicado."
