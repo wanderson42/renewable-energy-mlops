@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan
+.PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan repro-inventory
 PORT_LOG_DIR := .ports
 
 # ==============================================================================
@@ -67,6 +67,9 @@ repro-tools:
 
 repro-plan:
 	@bash scripts/plan-repro.sh
+
+repro-inventory:
+	@bash scripts/inventory-repro-data.sh
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."

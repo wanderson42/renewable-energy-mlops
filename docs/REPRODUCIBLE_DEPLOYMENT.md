@@ -8,8 +8,9 @@ Auditoria inicial realizada em 05/10/2026 na branch
 
 Esta etapa registra o contrato de reprodução e os passos necessários para
 implementá-lo. O KinD de ensaio foi criado e validado pelo operador em
-05/10/2026. O root module Terraform local está preparado, mas o provisionamento real dos
-workloads e o deployment automatizado ainda não foram executados. O rollout operacional permanece manual.
+05/10/2026. O primeiro `terraform apply` instalou PostgreSQL, RustFS e MLflow no ensaio,
+com a API desabilitada. O deployment automatizado ainda não foi executado;
+o rollout operacional permanece manual.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -153,7 +154,8 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 
 - [x] Inventário da v0.3 capturado, incluindo imagens dos workloads, imagem do node e versão do KinD.
 - [x] Configuração KinD reproduzida em um cluster separado; node Ready e StorageClass disponível.
-- [ ] Instalação dos workloads reproduzida no cluster separado.
+- [x] PostgreSQL, RustFS e MLflow provisionados por Terraform no cluster separado, com PVCs Bound.
+- [ ] Serving habilitado e validado após a restauração no cluster separado.
 - [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
 - [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
 - [ ] Snapshot de metadata e artefatos restaurado e identidade do modelo verificada.
@@ -389,6 +391,56 @@ credenciais fictícias. Seus testes verificam o destino dedicado, a precedência
 do bloqueio da API e a rejeição de credenciais ausentes. Não acessa Kubernetes
 nem demonstra provisionamento real. O `plan` operacional é uma etapa distinta,
 executada na máquina que possui o kubeconfig do ensaio.
+
+## 9. Resultado do primeiro apply e preparo da restauração
+
+O operador executou o plano salvo em 05/10/2026: `1 added, 0 changed, 0 destroyed`,
+com criação da release em 52 segundos. PostgreSQL, RustFS e MLflow apresentaram
+`1/1 Ready`, zero reinícios e os PVCs de 2 GiB/5 GiB estavam `Bound`.
+A evidência está em
+[`evidence/terraform_bootstrap_2026-10-05.json`](evidence/terraform_bootstrap_2026-10-05.json).
+
+Esse marco comprova o provisionamento real da infraestrutura pelo Terraform.
+Ainda não comprova reaplicação sem mudanças, conteúdo dos buckets, restauração
+do Registry ou equivalência de inferência. A API permanece desabilitada.
+O critério de aceitação da instalação do sistema completo continua pendente
+até o serving também ser exercitado.
+
+Antes de preparar o snapshot:
+
+```bash
+make repro-plan
+make repro-inventory
+kubectl config current-context
+curl -fsS --max-time 5 http://localhost:8000/model-info
+```
+
+O segundo plano deve informar `No changes`. Não aplicar esse plano vazio.
+As alterações desta etapa não modificam o chart ou o root module Terraform.
+O último par de comandos confere o contexto e a identidade servida pela origem.
+
+O inventário executa o script Python via stdin dentro dos contêineres MLflow de
+origem e destino. Usa o Python e os pacotes do servidor; não depende do ambiente
+Poetry nem instala dependências. O script:
+
+- consulta o Registry, o alias champion, a Run e os URIs do modelo;
+- exige a identidade v17/Run da origem documentada;
+- confere que o Registry do destino está vazio;
+- lista metadata dos objetos para contar arquivos e bytes dos dois buckets;
+- recusa continuar se houver dados de aplicação no destino;
+- mostra as versões dos pacotes e os image IDs dos pods do ensaio.
+
+As chamadas são de leitura. Não cria buckets, não baixa objetos, não faz dump de
+PostgreSQL e não altera aliases. Os resultados ficam em
+`.repro/source-data-inventory.json` e `.repro/destination-data-inventory.json`.
+Uma falha em qualquer lado interrompe o preflight; os snapshots e a restauração
+serão preparados depois de revisar essas evidências.
+
+A restauração usará um dump lógico do banco e cópias dos objetos, preservando os
+identificadores e os caminhos referenciados pelo MLflow. Os PVCs da origem não
+serão conectados ao ensaio. Uma captura consistente também exige definir um
+intervalo sem escritores concorrentes; essa condição será estabelecida antes
+do backup, sem assumir que DB e object storage têm snapshot transacional comum.
 
 ## Referências do projeto
 

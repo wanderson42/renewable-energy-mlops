@@ -11,6 +11,8 @@ on:
       - "infra/kind/**"
       - "scripts/create-repro-cluster.sh"
       - "tests/infra/test_create_repro_cluster.py"
+      - "scripts/inventory-repro-data.*"
+      - "tests/infra/test_repro_data_inventory.py"
       - "Makefile"
   pull_request:
     branches: [main]
@@ -22,6 +24,8 @@ on:
       - "infra/kind/**"
       - "scripts/create-repro-cluster.sh"
       - "tests/infra/test_create_repro_cluster.py"
+      - "scripts/inventory-repro-data.*"
+      - "tests/infra/test_repro_data_inventory.py"
       - "Makefile"
 
 permissions:
@@ -50,3 +54,7 @@ jobs:
         run: bash -n scripts/create-repro-cluster.sh
       - name: Test bootstrap isolation with fake CLIs
         run: python -m unittest discover -s tests/infra -p test_create_repro_cluster.py -v
+      - name: Check inventory shell syntax
+        run: bash -n scripts/inventory-repro-data.sh
+      - name: Test restore preflight with read-only clients
+        run: python -m unittest discover -s tests/infra -p test_repro_data_inventory.py -v
