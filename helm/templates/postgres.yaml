@@ -24,7 +24,8 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:13
+        image: {{ include "energy-mlops.image" .Values.postgres.image | quote }}
+        imagePullPolicy: {{ .Values.postgres.image.pullPolicy | quote }}
         env:
         - name: POSTGRES_USER
           value: "{{ .Values.postgres.user }}"

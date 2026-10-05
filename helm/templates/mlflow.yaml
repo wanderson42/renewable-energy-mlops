@@ -13,7 +13,8 @@ spec:
     spec:
       containers:
       - name: mlflow
-        image: ghcr.io/mlflow/mlflow:v3.16.1-full
+        image: {{ include "energy-mlops.image" .Values.mlflow.image | quote }}
+        imagePullPolicy: {{ .Values.mlflow.image.pullPolicy | quote }}
         command:
           - sh
           - -c

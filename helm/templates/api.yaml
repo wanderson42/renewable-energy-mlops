@@ -16,8 +16,8 @@ spec:
     spec:
       containers:
         - name: api
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
-          imagePullPolicy: Always
+          image: {{ include "energy-mlops.image" .Values.api.image | quote }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy | quote }}
           ports:
             - containerPort: 8000
           env:

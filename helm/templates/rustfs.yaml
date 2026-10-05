@@ -27,7 +27,8 @@ spec:
     spec:
       containers:
         - name: rustfs
-          image: rustfs/rustfs:latest
+          image: {{ include "energy-mlops.image" .Values.rustfs.image | quote }}
+          imagePullPolicy: {{ .Values.rustfs.image.pullPolicy | quote }}
           env:
             - name: RUSTFS_ACCESS_KEY
               value: {{ .Values.rustfs.rootUser | quote }}

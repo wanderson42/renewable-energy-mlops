@@ -1,0 +1,38 @@
+name: Helm chart validation
+
+on:
+  push:
+    branches: [main, "infra/**"]
+    paths:
+      - "helm/**"
+      - "tests/infra/test_helm_chart.py"
+      - "docs/evidence/deployment_baseline_2026-10-05.json"
+      - ".github/workflows/helm.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "helm/**"
+      - "tests/infra/test_helm_chart.py"
+      - "docs/evidence/deployment_baseline_2026-10-05.json"
+      - ".github/workflows/helm.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.19.0
+      - name: Lint default chart
+        run: helm lint helm --strict
+      - name: Lint reproduction profile
+        run: helm lint helm --strict -f helm/environments/repro.yaml
+      - name: Render image contract tests
+        run: python -m unittest discover -s tests/infra -p test_helm_chart.py -v

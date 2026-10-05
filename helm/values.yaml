@@ -1,19 +1,37 @@
 # helm/values.yaml
 rustfs:
+  image:
+    repository: rustfs/rustfs
+    tag: latest
+    digest: ""
+    pullPolicy: Always
   rootUser: ""
   rootPassword: ""
   apiPort: 9000
   consolePort: 9001
 
 postgres:
+  image:
+    repository: postgres
+    tag: "13"
+    digest: ""
+    pullPolicy: IfNotPresent
   user: ""
   password: ""
   db: ""
+
+mlflow:
+  image:
+    repository: ghcr.io/mlflow/mlflow
+    tag: v3.16.1-full
+    digest: ""
+    pullPolicy: IfNotPresent
 
 api:
   image:
     repository: ghcr.io/wanderson42/renewable-energy-mlops
     tag: latest
-    pullPolicy: Always # Força o Kubernetes a ir à nuvem buscar a versão mais recente
+    digest: ""
+    pullPolicy: Always
   service:
     port: 8000

@@ -1,0 +1,54 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "User-supplied read-only kubectl, helm and model-info outputs",
+  "context": "kind-energy-mlops",
+  "namespace": "default",
+  "helm_release": "energy-mlops",
+  "helm_revision": 16,
+  "kubernetes_version": "v1.37.0",
+  "node_image": null,
+  "workloads": {
+    "energy-api": {
+      "requested_image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
+      "image_id": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
+      "ready_replicas": 1
+    },
+    "mlflow": {
+      "requested_image": "ghcr.io/mlflow/mlflow:v3.16.1-full",
+      "image_id": "ghcr.io/mlflow/mlflow@sha256:6af326440af64565c2ea5d1d28c9ee355f70a8d4af5b76e35938365e1ce2e428",
+      "ready_replicas": 1
+    },
+    "postgres": {
+      "requested_image": "postgres:13",
+      "image_id": "docker.io/library/postgres@sha256:4689940c683801b4ab839ab3b0a0a3555a5fe425371422310944e89eca7d8068",
+      "ready_replicas": 1
+    },
+    "rustfs": {
+      "requested_image": "rustfs/rustfs:latest",
+      "image_id": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+      "ready_replicas": 1
+    }
+  },
+  "volumes": {
+    "postgres-pvc": {"status": "Bound", "capacity": "2Gi", "storage_class": "standard", "access_mode": "RWO"},
+    "rustfs-pvc": {"status": "Bound", "capacity": "5Gi", "storage_class": "standard", "access_mode": "RWO"}
+  },
+  "model": {
+    "model_name": "ensemble_lgb_xgb_rf_bahia",
+    "alias": "champion",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+    "metrics": {
+      "oot_mae_mw": 787.1835861175788,
+      "oot_nmae_pct": 6.678801541769502,
+      "oot_mae_fc_pct": 6.678801541769504,
+      "oot_r2_score": 0.8613955426061799
+    }
+  },
+  "validation_limits": [
+    "No clean-cluster deployment or image pulls executed by this collection",
+    "No PostgreSQL or RustFS snapshot restored",
+    "Kind node image and exact smoke payload still pending",
+    "Platform-specific image IDs require registry availability verification before provisioning"
+  ]
+}

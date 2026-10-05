@@ -151,7 +151,7 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 
 ## 6. Critérios de aceitação
 
-- [ ] Inventário da v0.3 capturado, incluindo imagens realmente executadas.
+- [x] Inventário dos workloads da v0.3 capturado, incluindo imagens realmente executadas; imagem do node KinD ainda pendente.
 - [ ] Configuração KinD e instalação Helm reproduzidas em um cluster separado.
 - [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
 - [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
@@ -162,9 +162,53 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [ ] Automação de deployment executada de ponta a ponta.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
 
+## 7. Inventário coletado e perfil Helm
+
+O inventário fornecido pelo operador em 05/10/2026 está registrado em
+[`evidence/deployment_baseline_2026-10-05.json`](evidence/deployment_baseline_2026-10-05.json).
+Ele confirma os quatro workloads com uma réplica disponível, os dois PVCs
+`Bound`, Kubernetes `v1.37.0` e o champion v17 associado à Run
+`1d13a61244c54f06aa70f43a9993ea37`.
+
+O chart `0.1.1` passa a aceitar `image.repository`, `image.tag`, `image.digest`
+e `image.pullPolicy` nos quatro componentes. Quando fornecido, o digest
+prevalece sobre a tag. Os valores padrão mantêm as referências anteriores;
+o perfil de ensaio fixa os digests observados em
+[`helm/environments/repro.yaml`](../helm/environments/repro.yaml).
+
+Esses digests serão usados no ensaio na máquina de origem; sua disponibilidade
+no registry ainda precisa ser verificada. Nenhuma imagem foi baixada nem
+nenhum workload foi aplicado como parte desta alteração.
+
+Validação local do chart, sem acesso a Kubernetes:
+
+```bash
+helm lint helm --strict
+helm lint helm --strict -f helm/environments/repro.yaml
+python -m unittest discover -s tests/infra -p test_helm_chart.py -v
+```
+
+O workflow `Helm chart validation` executa essas verificações em pushes nas
+branches `infra/**` e na `main`, e em PRs para `main`, quando os arquivos
+correspondentes mudam. Ele não aplica manifests nem publica imagens.
+
+O runtime do MLflow ainda instala dependências sem versões no startup. Fixar
+o digest do contêiner resolve a identidade da imagem, mas não essa instalação;
+a correção continua pendente antes de declarar reprodução completa.
+
+Para completar a referência do cluster de origem, coletar também:
+
+```bash
+kind version
+docker inspect energy-mlops-control-plane --format '{{.Config.Image}}'
+```
+
+O payload exato do smoke histórico também permanece pendente. O notebook de
+governança registra seu timestamp (`2026-10-04T12:00:00Z`) e a saída, mas não
+contém todos os inputs necessários para reconstruir essa requisição.
+
 ## Referências do projeto
 
 - [Operação atual](OPERATIONS.md)
 - [Infraestrutura e limites de persistência validados](INFRASTRUCTURE.md)
 - [Contrato e governança do modelo](MODEL_CARD.md)
-
