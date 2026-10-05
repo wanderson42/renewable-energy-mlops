@@ -28,6 +28,7 @@ mlflow:
     pullPolicy: IfNotPresent
 
 api:
+  enabled: true
   image:
     repository: ghcr.io/wanderson42/renewable-energy-mlops
     tag: latest

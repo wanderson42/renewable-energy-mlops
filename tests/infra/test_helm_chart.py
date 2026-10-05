@@ -95,6 +95,18 @@ class HelmImageTests(unittest.TestCase):
         self.assertNotIn("must-not-be-used", result.stdout)
         self.assertIn('imagePullPolicy: "Never"', result.stdout)
 
+    def test_bootstrap_waits_for_model_restore_before_serving(self) -> None:
+        result = self.render(
+            "-f", "helm/environments/repro.yaml",
+            "-f", "helm/environments/repro-bootstrap.yaml",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("name: energy-api", result.stdout)
+        images = re.findall(r'^\s+image: "([^"]+)"$', result.stdout, re.M)
+        self.assertEqual(len(images), 3)
+        for component in ("mlflow", "postgres", "rustfs"):
+            self.assertIn(f"name: {component}", result.stdout)
+
     def test_invalid_digest_fails_for_every_component(self) -> None:
         for component in ("api", "mlflow", "postgres", "rustfs"):
             with self.subTest(component=component):

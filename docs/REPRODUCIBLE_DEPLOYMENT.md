@@ -7,12 +7,12 @@ Auditoria inicial realizada em 05/10/2026 na branch
 `3490b6503d1e2284f71ff6b3bcd63fef774bc04a`.
 
 Esta etapa registra o contrato de reprodução e os passos necessários para
-implementá-lo. O provisionamento em um KinD limpo, Terraform e o deployment
-automatizado ainda não foram executados. O rollout operacional permanece manual.
+implementá-lo. O KinD de ensaio foi criado e validado pelo operador em
+05/10/2026. A instalação dos workloads, Terraform e o deployment automatizado
+ainda não foram executados. O rollout operacional permanece manual.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
-a referência operacional; os ensaios de reprodução serão feitos em um cluster
-separado.
+a referência operacional; os ensaios de reprodução usam um cluster separado.
 
 ## 1. Escopo acordado
 
@@ -152,7 +152,8 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 ## 6. Critérios de aceitação
 
 - [x] Inventário da v0.3 capturado, incluindo imagens dos workloads, imagem do node e versão do KinD.
-- [ ] Configuração KinD e instalação Helm reproduzidas em um cluster separado.
+- [x] Configuração KinD reproduzida em um cluster separado; node Ready e StorageClass disponível.
+- [ ] Instalação dos workloads reproduzida no cluster separado.
 - [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
 - [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
 - [ ] Snapshot de metadata e artefatos restaurado e identidade do modelo verificada.
@@ -170,7 +171,7 @@ Ele confirma os quatro workloads com uma réplica disponível, os dois PVCs
 `Bound`, Kubernetes `v1.37.0` e o champion v17 associado à Run
 `1d13a61244c54f06aa70f43a9993ea37`.
 
-O chart `0.1.1` passa a aceitar `image.repository`, `image.tag`, `image.digest`
+O chart passa a aceitar `image.repository`, `image.tag`, `image.digest`
 e `image.pullPolicy` nos quatro componentes. Quando fornecido, o digest
 prevalece sobre a tag. Os valores padrão mantêm as referências anteriores;
 o perfil de ensaio fixa os digests observados em
@@ -196,9 +197,9 @@ O runtime do MLflow ainda instala dependências sem versões no startup. Fixar
 o digest do contêiner resolve a identidade da imagem, mas não essa instalação;
 a correção continua pendente antes de declarar reprodução completa.
 
-O operador também confirmou os cinco testes de renderização na máquina de
-origem. O aviso de lint sobre ícone recomendado é informativo; os dois perfis
-passaram em `helm lint --strict`.
+O operador também confirmou os cinco testes iniciais de renderização na
+máquina de origem. O aviso de lint sobre ícone recomendado é informativo;
+os dois perfis passaram em `helm lint --strict`.
 
 ### Criação do KinD separado
 
@@ -247,6 +248,40 @@ identificando v17 e a Run documentada.
 O bootstrap ainda não instala workloads nem restaura dados. Se a criação falhar,
 inspecionar o cluster e `.repro/kubeconfig` antes de tentar novamente; o script
 não faz exclusão nem limpeza automática de recursos.
+
+### Resultado do bootstrap real
+
+A criação executada pelo operador em 05/10/2026 confirmou:
+
+- os clusters `energy-mlops` e `energy-mlops-repro` disponíveis;
+- node `energy-mlops-repro-control-plane` Ready, Kubernetes `v1.37.0`;
+- StorageClass `standard` disponível no destino;
+- contexto operacional preservado como `kind-energy-mlops`;
+- API de origem ainda servindo v17 e a mesma Run.
+
+A evidência está em
+[`evidence/reproduction_cluster_2026-10-05.json`](evidence/reproduction_cluster_2026-10-05.json).
+Ela comprova a criação isolada do cluster, não a reprodução do sistema MLOps
+completo. Não é necessário executar `make repro-cluster` novamente.
+
+### Próxima etapa: infraestrutura antes do serving
+
+O chart `0.1.2` inclui `api.enabled`, com padrão `true`. O perfil
+[`helm/environments/repro-bootstrap.yaml`](../helm/environments/repro-bootstrap.yaml)
+desabilita a API durante a preparação de PostgreSQL, RustFS e MLflow. Ele
+complementa o perfil `repro.yaml`; não contém imagens ou credenciais próprias.
+
+O serving será habilitado na mesma release depois que os dados, o Registry e
+os artefatos estiverem disponíveis. Esse preparo não muda o alias da origem.
+
+Antes de aplicar a infraestrutura, capturar as versões de Python/MLflow e das
+dependências S3/PostgreSQL instaladas no contêiner de origem. O `poetry.lock`
+do aplicativo não comprova as versões instaladas pelo startup do servidor
+MLflow. Essa coleta orientará a eliminação das instalações sem versões.
+
+Também verificar `terraform version` e `helm version --short` na máquina de
+origem. O próximo provisionamento será preparado pelo root module Terraform
+local, evitando instalar uma release manualmente e precisar importá-la depois.
 
 O payload exato do smoke histórico também permanece pendente. O notebook de
 governança registra seu timestamp (`2026-10-04T12:00:00Z`) e a saída, mas não
