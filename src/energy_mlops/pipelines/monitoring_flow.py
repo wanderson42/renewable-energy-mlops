@@ -654,6 +654,82 @@ def evaluate_performance_drift(
     )
 
 
+def build_hourly_comparison(
+    model: Any, X: pd.DataFrame, frame: pd.DataFrame, context: dict, execution_id: str,
+) -> pd.DataFrame:
+    """Estimativas retrospectivas; truth indisponível permanece ausente."""
+    if len(X) != len(frame) or not X.index.equals(frame.index):
+        raise ValueError("Features e dados horários devem estar alinhados.")
+    predictions = np.asarray(
+        model.predict(X.loc[:, get_model_feature_order(model)]), dtype=float,
+    ).reshape(-1)
+    if len(predictions) != len(frame) or not np.isfinite(predictions).all():
+        raise ValueError("Previsões horárias inválidas.")
+    dates = pd.to_datetime(frame["date"], utc=True, errors="raise")
+    capacity = pd.to_numeric(frame["capacidade_mw"], errors="coerce")
+    truth = pd.to_numeric(
+        frame.get("wind_generation_mw", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    capacity_valid = np.isfinite(capacity) & capacity.gt(0)
+    truth_valid = np.isfinite(truth) & truth.ge(0) & capacity_valid
+    predicted_mw = predictions * capacity.where(capacity_valid)
+    observed_mw = truth.where(truth_valid)
+    return pd.DataFrame({
+        "execution_id": execution_id,
+        "model_version": context["version"], "model_run_id": context["run_id"],
+        "date": dates, "dia_local": dates.dt.tz_convert("America/Sao_Paulo").dt.strftime("%Y-%m-%d"),
+        "predicted_mw": predicted_mw, "observed_mw": observed_mw,
+        "capacidade_mw": capacity, "truth_valid": truth_valid,
+        "error_mw": predicted_mw - observed_mw,
+        "absolute_error_mw": (predicted_mw - observed_mw).abs(),
+    }).reset_index(drop=True)
+
+
+def summarize_daily_comparison(hourly: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for day, group in hourly.groupby("dia_local", sort=True):
+        valid = group.loc[group["truth_valid"]]
+        mae = float(valid["absolute_error_mw"].mean()) if len(valid) else np.nan
+        capacity = float(valid["capacidade_mw"].max()) if len(valid) else np.nan
+        rows.append({
+            "dia_local": day, "horas_meteorologicas": len(group),
+            "horas_truth_validas": len(valid), "horas_esperadas": 24,
+            "status": "SEM_TRUTH" if valid.empty else
+                      "DIA_COMPLETO" if len(valid) == 24 else "TRUTH_PARCIAL",
+            "mae_mw": mae, "nmae_pct": mae / capacity * 100 if len(valid) else np.nan,
+            "bias_mw": float(valid["error_mw"].mean()) if len(valid) else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+@task(name="Salvar comparação horária de geração")
+def persist_generation_comparison(
+    X: pd.DataFrame, frame: pd.DataFrame, context: dict, execution_id: str,
+    history_base: str, performance: dict,
+) -> dict:
+    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+    model = mlflow.sklearn.load_model(
+        f"models:/{context['model_name']}/{context['version']}",
+    )
+    hourly = build_hourly_comparison(model, X, frame, context, execution_id)
+    selected = hourly.loc[hourly["truth_valid"]]
+    if len(selected) != performance.get("evaluated_rows", 0):
+        raise ValueError("Cobertura horária diverge da avaliação de performance.")
+    if not selected.empty:
+        nmae = selected["absolute_error_mw"].mean() / selected["capacidade_mw"].max() * 100
+        if not np.isclose(nmae, performance["current_nmae_pct"], atol=1e-6, rtol=0):
+            raise ValueError("Artefato horário diverge do nMAE registrado.")
+    daily = summarize_daily_comparison(hourly)
+    fs = s3fs.S3FileSystem(**settings.storage_options)
+    paths = {"hourly_csv_path": history_base + ".hourly.csv",
+             "daily_csv_path": history_base + ".daily.csv"}
+    for key, table in [("hourly_csv_path", hourly), ("daily_csv_path", daily)]:
+        with fs.open(paths[key], "w", encoding="utf-8") as stream:
+            table.to_csv(stream, index=False)
+    return {**paths, "evaluation_kind": "observed_weather_retrospective"}
+
+
 # ==============================================================================
 # 7. PIPELINE DE MONITORAMENTO
 # ==============================================================================
@@ -705,6 +781,9 @@ def batch_monitoring_pipeline(
                 "baseline_nmae_pct": baseline, "current_nmae_pct": current,
                 "delta_nmae_pp": delta, "drift_detected": performance_drift,
             }
+    generation_comparison = persist_generation_comparison(
+        X_cur, df_cur_feat, context, execution_id, history_base, performance,
+    )
     drift = data_drift or performance_drift
     eligible = (
         current_window["window_status"] == "COMPLETE_MONTH"
@@ -716,6 +795,7 @@ def batch_monitoring_pipeline(
         "reference_window": reference_window, "current_window": current_window,
         "data_drift": {"share": share, "detected": data_drift, "threshold": DRIFT_SHARE_THRESHOLD},
         "performance": performance,
+        "generation_comparison": generation_comparison,
         "performance_threshold_pp": PERFORMANCE_NMAE_DELTA_PP_THRESHOLD,
         "training_requested": trigger_training,
         "training_eligible": eligible,
