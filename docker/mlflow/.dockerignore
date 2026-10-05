@@ -1,0 +1,6 @@
+# Dedicated build context: application files and credentials are never sent.
+*
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!verify_runtime.py

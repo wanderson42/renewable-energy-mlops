@@ -870,6 +870,73 @@ precisará ser validado no ensaio com Registry, acesso aos artefatos e o mesmo
 gate de serving. Depois, completar a configuração dos processos locais e o
 blueprint AWS com validações estáticas e mocks, sem provisionamento pago.
 
+## 16. Build do runtime MLflow antes de alterar o deployment
+
+O build está definido em [`docker/mlflow/Dockerfile`](../docker/mlflow/Dockerfile),
+com contexto limitado à própria pasta. Usa a imagem base por digest já
+inventariada, Python `3.11.15` e as nove versões observadas nos dois servidores.
+Esse ambiente é independente do Poetry/Python `3.14` da aplicação.
+
+As dependências são instaladas durante o build, com `--no-deps` e
+`--only-binary=:all:`. As demais dependências permanecem as da imagem base;
+`pip check`, versões e imports precisam passar. O inventário completo fica em
+`/opt/energy-mlops-mlflow/installed-packages.json` e o resumo verificado em
+`verified-runtime.json`, dentro da imagem. O runtime configura `PIP_NO_INDEX=1`
+e seu comando padrão inicia o servidor, sem instalação no startup.
+
+Isso fixa a composição do runtime publicado por digest. O arquivo de nove
+pins não é um lockfile completo com hashes de wheels; o build ainda acessa o
+registry/PyPI e não promete produzir um digest idêntico em toda reconstrução.
+A configuração impede o resolver de escolher novas dependências transitivas
+e exige a checagem de compatibilidade. Referências:
+[pip install](https://pip.pypa.io/en/stable/cli/pip_install/) e
+[pip check](https://pip.pypa.io/en/stable/cli/pip_check/).
+
+### Validação na máquina do operador
+
+```bash
+git pull --ff-only
+make repro-mlflow-build
+```
+
+Esse target usa Docker no host; não instala nada no ambiente Poetry.
+Constrói uma imagem `linux/amd64`, identificada pelo commit local, e valida:
+
+1. Versões, imports e `pip check` em um container com `--network none`.
+2. Inicialização de um servidor temporário com SQLite e artefatos locais,
+   também sem rede externa, sem publicar portas ou montar volumes do host.
+3. `/health` e a consulta HTTP de experimentos no próprio container.
+4. Encerramento somente do container criado pelo teste, inclusive em falha.
+
+O servidor temporário usa um worker, limite de 2 GiB de memória e duas CPUs.
+Seu banco fica em `/tmp` e é descartado com o container. O build ainda exige
+rede, espaço em disco e recursos do host. O resultado local aprovado fica em
+`.repro/mlflow-runtime-build.json`; `local_image_id` identifica a imagem no
+Docker local e não deve ser confundido com um digest de manifesto publicado.
+O target não publica imagens nem atualiza Kubernetes.
+
+### Publicação pelo Actions
+
+O workflow [`MLflow runtime image`](../.github/workflows/mlflow-image.yaml)
+constrói e carrega uma imagem, executa o mesmo teste sem rede e, somente após
+aprovação, publica **a imagem testada**, sem um segundo build. Em PRs executa
+somente build/teste. Em pushes em `main`/`infra/**` com alterações relevantes,
+ou execução manual, publica no pacote GHCR existente com a tag
+`mlflow-<commit completo>`; não altera a tag `latest` da API.
+O digest publicado fica no resumo do job e no artifact `mlflow-image-digests`.
+O teste antes de publicar segue o fluxo descrito na
+[documentação Docker](https://docs.docker.com/build/ci/github-actions/test-before-push/).
+
+O perfil Helm permanece na imagem anterior enquanto se obtém essa evidência.
+Depois de um build aprovado e da confirmação do digest acessível, a adoção
+será planejada pelo Terraform no ensaio: imagem própria, remoção da instalação
+via pip no template e validação de runtime, Registry, artefatos e serving.
+O smoke isolado com SQLite não comprova conexão a PostgreSQL/RustFS.
+No runtime do editor não há Docker; foram verificadas sintaxe Python/shell/YAML,
+consistência dos pins e da base com o inventário, ordem build/teste/publicação
+e rejeição de metadados de versões incorretas. Build e HTTP reais aguardam
+execução no Actions ou na máquina do operador.
+
 ## Referências do projeto
 
 - [Operação atual](OPERATIONS.md)
