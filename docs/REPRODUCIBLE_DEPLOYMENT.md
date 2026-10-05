@@ -175,9 +175,13 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [x] Falha de pull por digest e recuperação declarativa exercitadas com gate e PVCs preservados.
 - [x] Upgrade funcional do runtime MLflow validado com Registry, artefato, PVCs e serving.
 - [x] Runtime MLflow empacotado e validado em imagem própria por digest.
-- [ ] Configuração e inicialização de Prefect/dashboard incluídas na reprodução local.
+- [x] Configuração e inicialização de Prefect/dashboard incluídas na reprodução local, com gate de settings, SDKs e consulta HTTP de dados.
 - [x] Automação de deployment local executada: plano, apply, rollout e gate.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
+
+A navegação no Prefect após a correção de auth ainda aguarda confirmação;
+os gates de inicialização não comprovam browser E2E. O dashboard foi informado
+como funcional pelo operador, sem evidência detalhada de cada interação.
 
 ## 7. Inventário coletado e perfil Helm
 
@@ -1062,8 +1066,8 @@ Não houve promoção, treino ou alteração da identidade do modelo. O ensaio
 não executou rollback dessa atualização de MLflow/chart, não re-verificou todo
 o conteúdo dos buckets e não mediu disponibilidade contínua durante o rollout.
 
-A próxima frente local é reproduzir a inicialização de Prefect e dashboard
-com seus endpoints, portas e processos explicitamente isolados. O ambiente
+A frente local seguinte reproduziu a inicialização de Prefect e dashboard
+com seus endpoints, portas e processos explicitamente isolados (seções 19–21). O ambiente
 operacional da v0.3 continua como referência do acompanhamento longitudinal.
 Depois dessa frente, completar o blueprint AWS com validação estática e mocks,
 sem criar recursos pagos e sem alegar deployment cloud.
@@ -1074,8 +1078,8 @@ O launcher [`scripts/repro-client.py`](../scripts/repro-client.py) mantém os
 clientes em **primeiro plano**, no Python do host para a supervisão e no
 ambiente Poetry para os serviços e SDKs. Não altera o chart, Terraform ou
 o deployment existente. Esta seção descreve o procedimento preparado;
-a execução original foi exercitada pelo operador (seção 20); a correção do
-acesso à UI Prefect ainda precisa de validação no host.
+a execução original foi exercitada pelo operador (seção 20), e o gate corrigido
+passou no host (seção 21). A navegação no Prefect ainda aguarda confirmação.
 
 | Serviço do ensaio | Endereço local | Origem |
 |---|---|---|
@@ -1197,7 +1201,8 @@ o health passou sem exercitar as consultas de dados que a UI utiliza. A UI
 também anuncia o método de auth por truthiness, que trata a string vazia como
 falsa. Esse erro de configuração explica a falha esperada nas consultas sem
 Authorization; a captura do operador não registra os códigos HTTP dessas
-consultas. A correção ainda deve ser confirmada em execução.
+consultas. O gate corrigido foi confirmado em execução, conforme a seção 21;
+a navegação no navegador permanece pendente.
 
 A correção deixa os três campos de auth ausentes do ambiente filho
 (`PREFECT_API_KEY`, `PREFECT_API_AUTH_STRING`, `PREFECT_SERVER_API_AUTH_STRING`),
@@ -1215,8 +1220,37 @@ Prefect sem runs é esperado neste banco novo; isso não significa indisponibili
 Se continuar falhando, conservar o SQLite e diagnosticar as respostas HTTP/logs,
 sem executar reset do banco ou alterar o ambiente operacional da v0.3.
 
-Evidência do primeiro startup, separada do resultado ainda pendente da correção:
+Evidência histórica do primeiro startup, anterior ao gate corrigido da seção 21:
 [`evidence/client_startup_2026-10-05.json`](evidence/client_startup_2026-10-05.json).
+
+## 21. Gate corrigido do cliente aprovado no host
+
+O operador repetiu `make repro-client` após a correção `7717884`. O recibo em
+`2026-10-05T23:55:57.439609+00:00` confirmou os seguintes caminhos:
+
+| Verificação real | Resultado |
+|---|---|
+| Runtime Poetry | Python `3.14.4`; seis versões iguais ao lockfile |
+| Serving e Registry/Run | Champion v17 e Run histórica preservados |
+| RustFS | Dois buckets acessíveis; `MLmodel` com 2.015 bytes e SHA-256 do restore |
+| Prefect local | Settings isolados e SQLite presente |
+| Configuração HTTP da UI | `api_url=http://127.0.0.1:14200/api`, `auth=null` |
+| Consulta de dados Prefect | HTTP `200`, `flow_runs_count=0` |
+| Streamlit | Health HTTP `200` |
+
+O launcher permaneceu em primeiro plano e informou **Cliente pronto**. A consulta
+de contagem exerceu um endpoint que exige autenticação quando configurada e leu
+o banco, além do health. A contagem zero corresponde ao estado novo de
+orquestração; o procedimento não cria runs nem restaura o histórico Prefect.
+
+A evidência sanitizada está em
+[`evidence/client_gate_recovery_2026-10-05.json`](evidence/client_gate_recovery_2026-10-05.json).
+O recibo conserva `browser_e2e="not exercised by this gate"` para Prefect e
+Streamlit. O operador havia informado funcionamento do dashboard, mas ainda
+não confirmou a navegação no Prefect após a correção. Tampouco há evidência
+nova de encerramento/reinício do launcher ou de disponibilidade contínua.
+O marco de configuração e inicialização está exercitado; a confirmação visual
+do Prefect continua pendente antes de consolidar o cliente como validado.
 
 ## Referências do projeto
 
