@@ -4,6 +4,7 @@ locals {
   context      = "kind-energy-mlops-repro"
   namespace    = "energy-mlops-repro"
   release      = "energy-mlops-repro"
+  mlflow_image = yamldecode(file("${local.chart_path}/environments/repro.yaml")).mlflow
   # Detect local chart edits even when the chart directory path is unchanged.
   chart_hash = sha256(join("", [
     for name in sort(tolist(fileset(local.chart_path, "**"))) :

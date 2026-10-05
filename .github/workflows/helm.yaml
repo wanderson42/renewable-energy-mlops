@@ -22,6 +22,9 @@ on:
       - "scripts/review-repro-plan.py"
       - "scripts/plan-repro.sh"
       - "tests/infra/test_repro_serving.py"
+      - "scripts/validate-mlflow-runtime.py"
+      - "tests/infra/test_mlflow_runtime_gate.py"
+      - "docs/evidence/mlflow_runtime_build_2026-10-05.json"
       - "Makefile"
   pull_request:
     branches: [main]
@@ -44,6 +47,9 @@ on:
       - "scripts/review-repro-plan.py"
       - "scripts/plan-repro.sh"
       - "tests/infra/test_repro_serving.py"
+      - "scripts/validate-mlflow-runtime.py"
+      - "tests/infra/test_mlflow_runtime_gate.py"
+      - "docs/evidence/mlflow_runtime_build_2026-10-05.json"
       - "Makefile"
 
 permissions:
@@ -86,3 +92,5 @@ jobs:
         run: python -m unittest discover -s tests/infra -p test_repro_restore.py -v
       - name: Test serving stage and paired HTTP gates with fake clients
         run: python -m unittest discover -s tests/infra -p test_repro_serving.py -v
+      - name: Test packaged MLflow image and artifact guards without a cluster
+        run: python -m unittest discover -s tests/infra -p test_mlflow_runtime_gate.py -v

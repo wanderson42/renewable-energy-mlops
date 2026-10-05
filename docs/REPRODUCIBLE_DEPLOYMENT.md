@@ -16,8 +16,10 @@ a v17 e reproduziu exatamente o lote pareado da origem. O plano posterior
 retornou `No changes` com serving habilitado. O rollout operacional da origem
 permanece manual. O ensaio de falha de pull e recuperação declarativa também
 passou: digest validado, v17/Run, inferência e UIDs dos PVCs preservados, com
-plano final `No changes`. A imagem própria do runtime MLflow, a configuração
-dos processos locais e o blueprint AWS continuam pendentes.
+plano final `No changes`. A imagem própria do runtime MLflow foi construída,
+testada sem rede externa e publicada no GHCR; sua adoção no KinD está preparada
+e aguarda validação real. A configuração dos processos locais e o blueprint
+AWS continuam pendentes.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -927,15 +929,99 @@ O digest publicado fica no resumo do job e no artifact `mlflow-image-digests`.
 O teste antes de publicar segue o fluxo descrito na
 [documentação Docker](https://docs.docker.com/build/ci/github-actions/test-before-push/).
 
-O perfil Helm permanece na imagem anterior enquanto se obtém essa evidência.
-Depois de um build aprovado e da confirmação do digest acessível, a adoção
-será planejada pelo Terraform no ensaio: imagem própria, remoção da instalação
-via pip no template e validação de runtime, Registry, artefatos e serving.
+O build e o HTTP reais passaram no host e no Actions da revisão `f8dd7c6`,
+com publicação confirmada no job. O perfil Helm passa a selecionar esse digest
+para a adoção no ensaio, conforme a seção 17.
 O smoke isolado com SQLite não comprova conexão a PostgreSQL/RustFS.
 No runtime do editor não há Docker; foram verificadas sintaxe Python/shell/YAML,
 consistência dos pins e da base com o inventário, ordem build/teste/publicação
-e rejeição de metadados de versões incorretas. Build e HTTP reais aguardam
-execução no Actions ou na máquina do operador.
+e rejeição de metadados de versões incorretas. O build e o HTTP reais foram
+confirmados pelo operador e pelos logs do Actions; o deployment desse runtime
+e os gates reais de PostgreSQL/RustFS ainda aguardam execução no ensaio.
+
+## 17. Imagem publicada e adoção do runtime no ensaio
+
+O operador aprovou `make repro-mlflow-build` na revisão `f8dd7c6`: Python
+`3.11.15`, nove versões exatas, imports e `pip check` aprovados. O servidor
+iniciou com SQLite temporário sem rede externa; `/health` retornou 200 e a
+consulta HTTP de experimentos passou. O workflow
+[MLflow runtime image, run 37380394752](https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37380394752)
+também terminou com `success`, incluindo teste, push e artifact do digest.
+
+| Identificação | Valor observado |
+|---|---|
+| Tag publicada | `ghcr.io/wanderson42/renewable-energy-mlops:mlflow-f8dd7c6d058e207af7267c76e91696d20f04bd24` |
+| Digest publicado | `sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f` |
+| ID observado no build local | `sha256:b6e3ddc28b0fa98cd0ff3df9f90878bb40cecad7ace86ee169b5be19289c8d84` |
+
+As duas imagens foram testadas em suas respectivas execuções; seus
+identificadores não são intercambiáveis. A referência do deployment será a
+publicada pelo Actions, registrada em
+[`evidence/mlflow_runtime_build_2026-10-05.json`](evidence/mlflow_runtime_build_2026-10-05.json).
+Isso não declara equivalência binária entre os dois builds.
+
+O chart passa a `0.1.5`. O perfil de reprodução fixa a imagem publicada e
+`mlflow.installRuntimePackages=false`; o comando usa `exec mlflow server`.
+Os valores padrão ainda permitem a instalação dos pins para a imagem oficial
+anterior. O root Terraform continua gerenciando a mesma release isolada.
+Seu output/review sanitizado informa a imagem desejada do MLflow e a flag de
+instalação, sem imprimir credenciais ou metadata do provider.
+
+### Sequência de adoção
+
+```bash
+git pull --ff-only
+poetry run python -m unittest discover -s tests/infra -p test_helm_chart.py -v
+poetry run python -m unittest discover -s tests/infra -p test_repro_serving.py -v
+poetry run python -m unittest discover -s tests/infra -p test_mlflow_runtime_gate.py -v
+.repro/bin/terraform -chdir=terraform/environments/local test
+make repro-checkpoint
+make repro-serving-plan
+```
+
+O checkpoint registra novamente o serving atual e os UIDs dos PVCs antes da
+atualização. O plano esperado mostra `0/1/0`, chart `0.1.4 -> 0.1.5`, mudança
+dos inputs Helm, API habilitada com o mesmo digest, imagem MLflow publicada e
+`planned_mlflow_install_runtime_packages=false`. Não usar o plano binário
+anterior. Após revisar esse resumo:
+
+```bash
+make repro-mlflow-apply
+make repro-plan
+```
+
+O primeiro target aplica o novo plano salvo, executa o gate pareado de serving
+e depois [`validate-mlflow-runtime.py`](../scripts/validate-mlflow-runtime.py):
+
+1. Confirma o node, rollout, imagem no deployment e digest do pod Ready,
+   com ausência de `pip install` no comando.
+2. Consulta o Registry vivo por HTTP, verificando a v17/Run e os URIs
+   históricos no servidor com backend PostgreSQL.
+3. Executa o verificador de versões/imports/dependências dentro do novo pod.
+4. Usa o SDK S3 desse pod para ler **somente `MLmodel`** do modelo restaurado
+   no RustFS. Compara tamanho e SHA-256 com o manifesto já verificado no restore.
+5. Reconfirma o Registry e os UIDs dos PVCs do checkpoint; não escreve em
+   PostgreSQL, Registry ou RustFS.
+
+O gate não carrega o pickle no Python do servidor, não re-hasheia todos os
+251 objetos e não promove modelos. A inferência pareada usa a API existente.
+A combinação dos gates demonstra os caminhos efetivamente consultados, sem
+alegar teste de todas as operações de tracking ou integridade nova de todo o
+banco. O comprovante fica em `.repro/mlflow-runtime-validation.json`.
+Para repetir só esse gate: `make repro-mlflow-validate`.
+
+O plano posterior precisa retornar `No changes`. Se apply ou um gate falhar,
+o comando interrompe e preserva o estado para diagnóstico; não há rollback
+automático desse upgrade de runtime/chart. O checkpoint e `repro-rollback`
+foram projetados para a recuperação da imagem da API, não para reverter o chart
+e a imagem MLflow desta atualização. Não usar esse target como recuperação
+genérica do runtime.
+
+No editor passaram três lints Helm, dez testes de chart, 23 de serving/review,
+quatro do novo gate e `terraform fmt -check`. Os testes usam renderização,
+clientes simulados e avaliação Terraform sem provider. Os seis testes
+Terraform com provider Helm/mocks e o apply/gates Kubernetes desta atualização
+aguardam execução no host/CI; não são resultados reais do cluster do editor.
 
 ## Referências do projeto
 

@@ -1,4 +1,5 @@
-# Imagens observadas no ambiente v0.3 em 05/10/2026, linux/amd64.
+# API, PostgreSQL e RustFS observados na v0.3 em 05/10/2026, linux/amd64.
+# MLflow: runtime empacotado e testado no Actions da revisão f8dd7c6.
 # Perfil exclusivo do ensaio de reprodução. Credenciais são fornecidas à parte.
 # Não aplicar este perfil à release operacional existente.
 api:
@@ -8,9 +9,10 @@ api:
     pullPolicy: IfNotPresent
 
 mlflow:
+  installRuntimePackages: false
   image:
-    repository: ghcr.io/mlflow/mlflow
-    digest: sha256:6af326440af64565c2ea5d1d28c9ee355f70a8d4af5b76e35938365e1ce2e428
+    repository: ghcr.io/wanderson42/renewable-energy-mlops
+    digest: sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f
     pullPolicy: IfNotPresent
 
 postgres:

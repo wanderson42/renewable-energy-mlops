@@ -1,0 +1,54 @@
+{
+  "recorded_on": "2026-10-05",
+  "git_revision": "f8dd7c6d058e207af7267c76e91696d20f04bd24",
+  "base_image": "ghcr.io/mlflow/mlflow@sha256:6af326440af64565c2ea5d1d28c9ee355f70a8d4af5b76e35938365e1ce2e428",
+  "runtime": {
+    "python": "3.11.15",
+    "packages": {
+      "mlflow": "3.16.1",
+      "boto3": "1.43.96",
+      "botocore": "1.43.96",
+      "psycopg2-binary": "2.9.13",
+      "s3transfer": "0.19.2",
+      "jmespath": "1.1.0",
+      "urllib3": "2.8.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0"
+    },
+    "imports_passed": true,
+    "pip_check_passed": true
+  },
+  "local_build": {
+    "source": "Operator-supplied make repro-mlflow-build output",
+    "local_tag": "energy-mlops-mlflow:f8dd7c6d058e207af7267c76e91696d20f04bd24",
+    "local_image_id": "sha256:b6e3ddc28b0fa98cd0ff3df9f90878bb40cecad7ace86ee169b5be19289c8d84",
+    "build_completed": true
+  },
+  "http_smoke": {
+    "health_http_status": 200,
+    "tracking_search_passed": true,
+    "backend": "temporary SQLite",
+    "external_network": "disabled"
+  },
+  "github_actions": {
+    "run_id": 37380394752,
+    "job_id": 112000569513,
+    "url": "https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37380394752",
+    "conclusion": "success",
+    "http_smoke_completed_at": "2026-10-05T22:08:50.7176244Z",
+    "published_at": "2026-10-05T22:09:37.4679687Z",
+    "artifact_id": 11373761811,
+    "artifact_name": "mlflow-image-digests"
+  },
+  "published_image": {
+    "tag": "ghcr.io/wanderson42/renewable-energy-mlops:mlflow-f8dd7c6d058e207af7267c76e91696d20f04bd24",
+    "digest": "sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f",
+    "reference": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f",
+    "source": "Successful docker push digest recorded in the CI job log"
+  },
+  "validation_limits": [
+    "Local image ID and published manifest digest are distinct observations; no bit-identical rebuild claim",
+    "The network-isolated SQLite smoke does not test PostgreSQL, RustFS or the restored Registry",
+    "Kubernetes adoption and runtime artifact access are not yet exercised"
+  ]
+}

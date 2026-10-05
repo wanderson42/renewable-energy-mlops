@@ -21,6 +21,8 @@ postgres:
   db: ""
 
 mlflow:
+  # The reproduction profile uses an image with these packages built in.
+  installRuntimePackages: true
   image:
     repository: ghcr.io/mlflow/mlflow
     tag: v3.16.1-full

@@ -51,6 +51,13 @@ def review(plan):
     output = {"summary": counts, "resources": resources,
               "planned_api_enabled": enabled if isinstance(enabled, bool) else "[unknown/unexpected]",
               "raw_values_and_provider_metadata": "omitted"}
+    image = target.get("mlflow_image")
+    if image is not None:
+        output["planned_mlflow_image"] = image if isinstance(image, str) and re.fullmatch(
+            r"ghcr.io/(wanderson42/renewable-energy-mlops|mlflow/mlflow)@sha256:[a-f0-9]{64}", image
+        ) else "[redacted/unexpected]"
+        install = target.get("mlflow_install_runtime_packages")
+        output["planned_mlflow_install_runtime_packages"] = install if isinstance(install, bool) else "[unknown/unexpected]"
     output_changes = plan.get("output_changes", {}).values()
     output["no_changes"] = not any(counts.values()) and all(
         item["change"]["actions"] == ["no-op"] for item in plan.get("resource_changes", [])

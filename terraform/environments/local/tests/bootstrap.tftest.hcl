@@ -23,8 +23,16 @@ run "isolated_bootstrap" {
   }
 
   assert {
-    condition     = length(helm_release.mlops.values) == 3 && strcontains(nonsensitive(helm_release.mlops.values[1]), "sha256:6af326440af64565c2ea5d1d28c9ee355f70a8d4af5b76e35938365e1ce2e428")
+    condition     = length(helm_release.mlops.values) == 3 && strcontains(nonsensitive(helm_release.mlops.values[1]), "sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f") && !output.deployment_target.mlflow_install_runtime_packages
     error_message = "Bootstrap must load the pinned image profile after the credentials."
+  }
+}
+
+run "packaged_mlflow_runtime" {
+  command = plan
+  assert {
+    condition     = output.deployment_target.mlflow_image == "ghcr.io/wanderson42/renewable-energy-mlops@sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f"
+    error_message = "The rehearsal must select the published MLflow runtime digest."
   }
 }
 

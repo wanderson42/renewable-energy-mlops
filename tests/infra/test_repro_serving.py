@@ -371,6 +371,16 @@ elif "show" in sys.argv:
 
 
 class PlanReviewTests(unittest.TestCase):
+    def test_runtime_review_only_prints_allowed_image_and_boolean_install_flag(self):
+        raw = plan()
+        target = raw["planned_values"]["outputs"]["deployment_target"]["value"]
+        target.update(mlflow_image=MODULE.IMAGE, mlflow_install_runtime_packages=False)
+        reviewed = REVIEW.review(raw)
+        self.assertEqual(reviewed["planned_mlflow_image"], MODULE.IMAGE)
+        self.assertIs(reviewed["planned_mlflow_install_runtime_packages"], False)
+        target.update(mlflow_image="PRIVATE_VALUE", mlflow_install_runtime_packages="PRIVATE_VALUE")
+        self.assertNotIn("PRIVATE_VALUE", json.dumps(REVIEW.review(raw)))
+
     def test_review_omits_secrets_even_in_provider_metadata_and_unexpected_settings(self):
         raw = plan()
         raw["variables"]["password"] = {"value": "FAKE_PRIVATE_INPUT"}

@@ -1,3 +1,6 @@
+{{- if not (kindIs "bool" .Values.mlflow.installRuntimePackages) }}
+{{- fail "mlflow.installRuntimePackages must be a boolean" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,8 +22,10 @@ spec:
           - sh
           - -c
           - |
+{{ if .Values.mlflow.installRuntimePackages }}
             pip install --quiet --no-cache-dir{{ range .Values.mlflow.runtimePackages }} {{ . | squote }}{{ end }} && \
-            mlflow server \
+{{ end }}
+            exec mlflow server \
               --backend-store-uri postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@postgres:5432/{{ .Values.postgres.db }} \
               --default-artifact-root s3://mlflow-artifacts/ \
               --host 0.0.0.0 \

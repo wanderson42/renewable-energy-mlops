@@ -47,7 +47,7 @@ class HelmImageTests(unittest.TestCase):
             policies, ["Always", "Always", "IfNotPresent", "IfNotPresent"]
         )
 
-    def test_repro_images_match_observed_baseline(self) -> None:
+    def test_repro_images_match_baseline_and_published_mlflow_runtime(self) -> None:
         baseline_path = (
             PROJECT_ROOT / "docs/evidence/deployment_baseline_2026-10-05.json"
         )
@@ -67,9 +67,11 @@ class HelmImageTests(unittest.TestCase):
                 images = re.findall(
                     r'^\s+image: "([^"]+)"$', result.stdout, re.M
                 )
-                self.assertEqual(
-                    images, [baseline["workloads"][workload]["image_id"]]
-                )
+                expected = baseline["workloads"][workload]["image_id"]
+                if workload == "mlflow":
+                    evidence = json.loads((PROJECT_ROOT / "docs/evidence/mlflow_runtime_build_2026-10-05.json").read_text())
+                    expected = evidence["published_image"]["reference"]
+                self.assertEqual(images, [expected])
                 policies = re.findall(
                     r'^\s+imagePullPolicy: "([^"]+)"$', result.stdout, re.M
                 )
@@ -118,10 +120,19 @@ class HelmImageTests(unittest.TestCase):
 
     def test_mlflow_runtime_matches_observed_server_packages(self) -> None:
         baseline = json.loads((PROJECT_ROOT / "docs/evidence/deployment_baseline_2026-10-05.json").read_text())
-        result = self.render("-f", "helm/environments/repro.yaml", "--show-only", "templates/mlflow.yaml")
+        result = self.render("--show-only", "templates/mlflow.yaml")
         self.assertEqual(result.returncode, 0, result.stderr)
         packages = re.findall(r"'([a-z0-9-]+)==([^']+)'", result.stdout)
         self.assertEqual(dict(packages), baseline["workloads"]["mlflow"]["runtime"]["packages"])
+
+    def test_packaged_mlflow_starts_without_installing_packages(self) -> None:
+        result = self.render("-f", "helm/environments/repro.yaml", "--show-only", "templates/mlflow.yaml")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("pip install", result.stdout)
+        self.assertIn("exec mlflow server", result.stdout)
+        invalid = self.render("--set-string", "mlflow.installRuntimePackages=false")
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("must be a boolean", invalid.stderr)
 
     def test_bootstrap_readiness_checks_do_not_depend_on_champion(self) -> None:
         for component, expected in (("mlflow", "port: 5000"), ("rustfs", "port: 9000"), ("postgres", "pg_isready")):
