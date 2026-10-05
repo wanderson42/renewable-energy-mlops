@@ -1,0 +1,80 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied test output and real make repro-recovery-test execution",
+  "git_revision": "ca7830b83b77a292b81504612c73d3f71dff260b",
+  "target": {
+    "context": "kind-energy-mlops-repro",
+    "namespace": "energy-mlops-repro",
+    "release": "energy-mlops-repro"
+  },
+  "serving_unit_tests": {
+    "passed": 22,
+    "failed": 0
+  },
+  "terraform_mock_tests": {
+    "passed": 5,
+    "failed": 0
+  },
+  "checkpoint_gate_validated_at": "2026-10-05T21:50:41.313311+00:00",
+  "controlled_failure": {
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "helm_timeout_seconds": 60,
+    "apply_failed_as_expected": true,
+    "waiting_reasons": [
+      "ErrImagePull"
+    ],
+    "plan": {
+      "added": 0,
+      "changed": 1,
+      "destroyed": 0
+    }
+  },
+  "declarative_recovery": {
+    "manager": "Terraform Helm provider",
+    "apply_completed": true,
+    "plan": {
+      "added": 0,
+      "changed": 1,
+      "destroyed": 0
+    },
+    "chart_version": "0.1.4",
+    "chart_hash": "c66affa6bb581cd593da51d7ae95b5ff64596a6be9e1eafa67ee306ed1626c17",
+    "helm_input_values_changed": false,
+    "serving_gate_validated_at": "2026-10-05T21:51:52.298638+00:00",
+    "reference": "paired_synthetic_batch_v1",
+    "reference_evidence": "serving_reproduction_2026-10-05.json"
+  },
+  "result": {
+    "verified_at": "2026-10-05T21:51:53.694528+00:00",
+    "expected_pull_failure": true,
+    "waiting_reasons": [
+      "ErrImagePull"
+    ],
+    "recovered_image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
+    "model": {
+      "model_name": "ensemble_lgb_xgb_rf_bahia",
+      "alias": "champion",
+      "version": 17,
+      "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+      "metrics": {
+        "oot_mae_mw": 787.1835861175788,
+        "oot_nmae_pct": 6.678801541769502,
+        "oot_mae_fc_pct": 6.678801541769504,
+        "oot_r2_score": 0.8613955426061799
+      }
+    },
+    "max_absolute_difference": {
+      "predicted_fc": 0.0,
+      "predicted_mw": 0.0
+    },
+    "post_recovery_plan": "No changes",
+    "pvc_identity_preserved": true,
+    "scope": "controlled image-pull failure in the isolated rehearsal"
+  },
+  "validation_limits": [
+    "Recovery from an unavailable API image digest in the isolated rehearsal; not an upgrade to a new functional release",
+    "PVC identities and serving were verified; the procedure did not restore the database or exercise model rollback",
+    "No continuous availability measurement or RTO guarantee",
+    "Source operational rollout remains manual; no claim of full GitOps or AWS deployment"
+  ]
+}

@@ -14,7 +14,10 @@ confirmada no Registry do destino e o plano posterior retornou `No changes`.
 O procedimento de habilitação e gate HTTP foi executado: a API do ensaio serve
 a v17 e reproduziu exatamente o lote pareado da origem. O plano posterior
 retornou `No changes` com serving habilitado. O rollout operacional da origem
-permanece manual. Recuperação de rollout e blueprint AWS continuam pendentes.
+permanece manual. O ensaio de falha de pull e recuperação declarativa também
+passou: digest validado, v17/Run, inferência e UIDs dos PVCs preservados, com
+plano final `No changes`. A imagem própria do runtime MLflow, a configuração
+dos processos locais e o blueprint AWS continuam pendentes.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -166,7 +169,10 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [x] Snapshot restaurado e identidade do modelo verificada no destino.
 - [x] Gate HTTP e lote pareado `paired_synthetic_batch_v1` aprovados no destino.
 - [x] Terraform instala a release e um novo plano após o apply não apresenta mudanças.
-- [ ] Atualização por digest e rollback exercitados com validação.
+- [x] Falha de pull por digest e recuperação declarativa exercitadas com gate e PVCs preservados.
+- [ ] Upgrade para uma nova imagem funcional validado; o ensaio de pull não cobre esse caso.
+- [ ] Runtime MLflow empacotado e validado em imagem própria por digest.
+- [ ] Configuração e inicialização de Prefect/dashboard incluídas na reprodução local.
 - [x] Automação de deployment local executada: plano, apply, rollout e gate.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
 
@@ -705,7 +711,7 @@ plano binário ou arquivos privados de `.repro/`.
 O gate não executa treino, promoção ou reload. O apply comum preserva falhas
 para diagnóstico; o novo roteiro de recuperação controlada descrito na seção 14
 tenta restaurar o checkpoint após sua falha intencional. Seu exercício real
-continua pendente.
+passou na revisão `ca7830b`, conforme a seção 15.
 
 ## 13. Correção do review do plano e proteção da saída
 
@@ -824,8 +830,45 @@ rollback para outro modelo. Não há restauro do banco nessa recuperação.
 Vinte e dois testes Python passaram nesta revisão, incluindo checkpoint,
 escopo limitado a imagem, recuperação após erro esperado/inesperado, preservação
 do diagnóstico e plano sem mudanças. A configuração Terraform tem cinco testes
-com mocks para executar no host/CI; o ensaio real de recuperação ainda não foi
-executado. O runtime MLflow e o blueprint AWS continuam como frentes posteriores.
+com mocks. O operador aprovou os 22 testes Python, os cinco testes Terraform
+e o ensaio real na revisão `ca7830b`, registrado na seção 15. O runtime MLflow
+e o blueprint AWS continuam como frentes posteriores.
+
+## 15. Recuperação real aprovada
+
+Na revisão `ca7830b`, o operador executou `make repro-recovery-test` no KinD
+separado. O checkpoint passou no gate em `2026-10-05T21:50:41.313311+00:00`.
+A atualização para o digest indisponível falhou e o script confirmou
+`ErrImagePull`. Em seguida, restaurou a configuração do checkpoint por um novo
+plano e apply Terraform. Os dois planos alteraram somente a mesma release:
+zero recursos adicionados, uma atualização e zero destruídos. O chart `0.1.4`,
+seu hash e os inputs Helm foram preservados.
+
+| Verificação após recuperação | Resultado observado |
+|---|---|
+| Imagem da API | Digest validado `sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188` |
+| Saúde e identidade | Modelo carregado, champion v17 e Run `1d13a61244c54f06aa70f43a9993ea37` |
+| Inferência pareada | Três previsões iguais à origem; diferença máxima zero em FC e MW |
+| Persistência | UIDs dos dois PVCs preservados |
+| Plano posterior | `No changes`, com API habilitada e timeout de 600s |
+| Testes executados pelo operador | 22 Python e cinco Terraform com mocks aprovados, zero falhas |
+
+O gate após o rollback passou em `2026-10-05T21:51:52.298638+00:00`; o resumo
+final foi registrado em `2026-10-05T21:51:53.694528+00:00`. A evidência sanitizada
+está em
+[`evidence/deployment_recovery_2026-10-05.json`](evidence/deployment_recovery_2026-10-05.json).
+Ela registra a execução real, separada das saídas simuladas dos testes.
+
+Esse marco fecha a recuperação de falha de pull no ensaio. Não demonstra
+upgrade de uma nova versão funcional, migração de dados, rollback de modelo
+ou disponibilidade contínua durante a tentativa. Não foi necessário restaurar
+o banco nem promover outra versão do modelo.
+
+A próxima entrega é empacotar as dependências do servidor MLflow em uma imagem
+própria, removendo a instalação via pip em cada startup. O digest construído
+precisará ser validado no ensaio com Registry, acesso aos artefatos e o mesmo
+gate de serving. Depois, completar a configuração dos processos locais e o
+blueprint AWS com validações estáticas e mocks, sem provisionamento pago.
 
 ## Referências do projeto
 

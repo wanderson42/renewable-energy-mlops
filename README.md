@@ -422,8 +422,11 @@ make stop-ports
 
 O runbook completo está em [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
-A fase v1.0 começa pela auditoria e reprodução do deployment em um KinD
-separado. O escopo, os pontos encontrados e os critérios de aceitação estão em
+A fase v1.0 já exercitou, em um KinD separado, provisionamento por Terraform/Helm,
+restauração, serving pareado da v17 e recuperação declarativa de uma falha de
+pull, com PVCs preservados e plano final sem mudanças. O runtime MLflow em
+imagem própria e o blueprint AWS seguem em andamento. O escopo, as evidências
+e os critérios de aceitação estão em
 [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
 ## Principais endpoints da API
