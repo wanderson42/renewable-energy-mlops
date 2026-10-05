@@ -18,6 +18,9 @@ on:
       - "tests/infra/test_repro_snapshot.py"
       - "scripts/restore-repro.sh"
       - "tests/infra/test_repro_restore.py"
+      - "scripts/repro-serving.py"
+      - "scripts/plan-repro.sh"
+      - "tests/infra/test_repro_serving.py"
       - "Makefile"
   pull_request:
     branches: [main]
@@ -36,6 +39,9 @@ on:
       - "tests/infra/test_repro_snapshot.py"
       - "scripts/restore-repro.sh"
       - "tests/infra/test_repro_restore.py"
+      - "scripts/repro-serving.py"
+      - "scripts/plan-repro.sh"
+      - "tests/infra/test_repro_serving.py"
       - "Makefile"
 
 permissions:
@@ -76,3 +82,5 @@ jobs:
         run: bash -n scripts/restore-repro.sh
       - name: Test destination-only restore with fake clients
         run: python -m unittest discover -s tests/infra -p test_repro_restore.py -v
+      - name: Test serving stage and paired HTTP gates with fake clients
+        run: python -m unittest discover -s tests/infra -p test_repro_serving.py -v

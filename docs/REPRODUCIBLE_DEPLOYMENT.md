@@ -9,8 +9,10 @@ Auditoria inicial realizada em 05/10/2026 na branch
 Esta etapa registra o contrato de reprodução e os passos necessários para
 implementá-lo. O KinD de ensaio foi criado e validado pelo operador em
 05/10/2026. O primeiro `terraform apply` instalou PostgreSQL, RustFS e MLflow no ensaio,
-com a API desabilitada. O deployment automatizado ainda não foi executado;
-o rollout operacional permanece manual.
+com a API desabilitada. O snapshot foi restaurado, a identidade da v17 foi
+confirmada no Registry do destino e o plano posterior retornou `No changes`.
+O procedimento de habilitação e gate HTTP está implementado; sua execução
+real permanece pendente. O rollout operacional da origem permanece manual.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -157,9 +159,9 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [x] PostgreSQL, RustFS e MLflow provisionados por Terraform no cluster separado, com PVCs Bound.
 - [ ] Serving habilitado e validado após a restauração no cluster separado.
 - [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
-- [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
+- [x] Buckets e dados mínimos disponíveis no ambiente de ensaio.
 - [x] Snapshot de metadata e conteúdo dos dois buckets capturado e verificado.
-- [ ] Snapshot restaurado e identidade do modelo verificada no destino.
+- [x] Snapshot restaurado e identidade do modelo verificada no destino.
 - [ ] Gate HTTP e smoke de referência aprovados no destino.
 - [x] Terraform instala a release e um novo plano após o apply não apresenta mudanças.
 - [ ] Atualização por digest e rollback exercitados com validação.
@@ -316,8 +318,8 @@ O root module está em `terraform/environments/local/`. Ele administra uma únic
 
 O provider utiliza a biblioteca Helm, sem invocar o CLI Helm instalado no host.
 O Helm `v4.3.0` informado pelo operador pode continuar sendo usado para inspeção;
-a CI de renderização utiliza `3.19.0`. A instalação real via provider ainda deve
-ser validada no ensaio.
+a CI de renderização utiliza `3.19.0`. A instalação real via provider foi
+validada no ensaio, conforme a evidência de bootstrap abaixo.
 
 As credenciais são lidas do arquivo local já utilizado pelo projeto,
 `helm/values_secrets.yaml`. Ele deve conter `postgres.user`, `postgres.password`,
@@ -403,8 +405,9 @@ A evidência está em
 
 Esse marco comprova o provisionamento real da infraestrutura pelo Terraform.
 Um segundo plano apresentou `No changes`, e os dois testes Terraform com mocks
-passaram na máquina do operador. A restauração do Registry e a equivalência de
-inferência ainda não foram demonstradas. A API permanece desabilitada.
+passaram na máquina do operador. A restauração posterior do Registry está
+documentada na seção 12; a equivalência de inferência permanece pendente.
+Até a conclusão dessa restauração, a API permaneceu desabilitada.
 O critério de aceitação da instalação do sistema completo continua pendente
 até o serving também ser exercitado.
 
@@ -614,8 +617,87 @@ ou novo restore sobre esse destino sem definir sua recuperação.
 Os sete testes novos verificam hashes no destino, prevenção de sobrescrita,
 rejeição de snapshot alterado, rejeição de node incorreto ou banco não vazio,
 escopo das operações de escala/SQL e comportamento em falha. São testes com
-clientes simulados; a restauração real permanece pendente até o operador
-executar o target.
+clientes simulados; o resultado real posterior está registrado a seguir.
+
+## 12. Restauração real e próximo gate de serving
+
+O operador concluiu `make repro-restore`: 251 objetos e 1.829.741.640 bytes
+foram verificados no destino, o PostgreSQL foi restaurado e o Registry retornou
+a v17, a Run e o URI históricos. Os três deployments voltaram a `1/1 Ready`
+e os PVCs permaneceram `Bound`. O plano executado após a restauração retornou
+`No changes`, confirmando o retorno ao estado declarado da infraestrutura.
+A evidência está em
+[`evidence/snapshot_restore_2026-10-05.json`](evidence/snapshot_restore_2026-10-05.json).
+Isso não demonstra inferência nem equivalência de todas as linhas do banco.
+
+### Habilitação explícita da API
+
+O root Terraform aceita `api_enabled`, com padrão `false`. O override final
+continua impedindo que o arquivo de credenciais determine esse estágio.
+Para habilitar o serving, o procedimento exige o comprovante local de restore
+e consulta a identidade atual no Registry do ensaio. Ele também confirma o
+node dedicado e rejeita instalação, substituição ou destruição da release.
+
+```bash
+poetry run python -m unittest discover -s tests/infra -p test_repro_serving.py -v
+.repro/bin/terraform -chdir=terraform/environments/local test
+make repro-serving-plan
+```
+
+O plano fica em `.repro/serving.tfplan` e deve mostrar atualização da mesma
+`helm_release.mlops`, sem criação/substituição/destruição de recursos Terraform.
+O chart passa a `0.1.4`; o novo deployment usa o digest já inventariado.
+Startup e readiness consultam `/health`, exigindo modelo carregado.
+PostgreSQL, RustFS e seus PVCs permanecem definidos pela mesma release.
+
+Depois de revisar o plano:
+
+```bash
+make repro-serving-apply
+make repro-plan
+```
+
+O apply usa somente o plano de serving salvo e roda o gate HTTP em seguida.
+Antes de aplicar, registra `api_enabled=true` em `.repro/deployment.tfvars.json`.
+Esse arquivo privado é reutilizado por `make repro-plan`, preservando a intenção
+de serving nos planos posteriores, inclusive se o apply/gate falhar. Não remover
+o arquivo para tentar corrigir uma falha: isso mudaria a configuração desejada.
+O plano posterior deve retornar `No changes`. Um plano pode ficar obsoleto se
+o state mudar; nesse caso, gere um novo plano. Não aplicar o plano de bootstrap
+anterior para habilitar serving.
+
+### Comparação pareada
+
+O gate confirma o digest do deployment e do pod Ready, `/health`, `/model-info`,
+alias/version/Run e igualdade das métricas servidas. Envia o mesmo lote sintético
+de três horas às APIs de origem e destino; confere datas, quantidade, números
+finitos, FC em `[0, 1]`, MW não negativos e equivalência numérica. As tolerâncias
+absolutas são `1e-12` para FC e `1e-9` MW, sem tolerância relativa.
+Consulta novamente os metadados para rejeitar mudança durante a comparação.
+
+Essa referência chama-se `paired_synthetic_batch_v1`, com payload registrado no
+script e no resultado. Ela exercita a engenharia de features, inclusive rolling,
+e o serving completo. Não é um benchmark de qualidade preditiva nem reproduz
+o smoke histórico `2092.931369766858`: o payload daquele smoke não foi fornecido.
+
+O ensaio usa port-forward em uma porta temporária de `127.0.0.1`; a origem
+continua em `localhost:8000`. O script encerra somente o processo que iniciou,
+inclusive em falha. O resumo fica em `.repro/serving-validation.json`, com
+timestamp, payload e respostas. Para repetir somente o gate: `make repro-validate`.
+Um arquivo de resultado anterior comprova apenas seu timestamp; o exit code da
+execução atual determina se a nova validação passou.
+
+Onze testes novos verificam isolamento, preservação do estágio entre planos,
+recusa de planos destrutivos, falha do apply, cleanup do port-forward e gates de
+identidade/inferência usando clientes simulados. O provider Terraform não inicia
+no runtime do editor; `fmt`, lint e testes Python foram verificados aqui, enquanto
+`validate`, os três testes Terraform com mocks e o serving real desta revisão
+devem ser executados na máquina do operador/CI.
+O JSON do plano é inspecionado em memória e não é impresso, pois contém valores
+sensíveis. Não publicar state, plano binário ou arquivos privados de `.repro/`.
+O gate não executa treino, promoção ou reload. Não há rollback automático nesta
+etapa; falhas preservam os recursos para diagnóstico. O exercício de atualização
+por outro digest e recuperação continua pendente.
 
 ## Referências do projeto
 

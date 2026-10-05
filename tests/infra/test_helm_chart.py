@@ -139,6 +139,13 @@ class HelmImageTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("image.tag is required", result.stderr)
 
+    def test_api_waits_for_a_loaded_model_before_becoming_ready(self) -> None:
+        result = self.render("--show-only", "templates/api.yaml")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("startupProbe:", result.stdout)
+        self.assertIn("readinessProbe:", result.stdout)
+        self.assertEqual(result.stdout.count("path: /health"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

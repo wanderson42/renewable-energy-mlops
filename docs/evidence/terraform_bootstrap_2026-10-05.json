@@ -48,9 +48,9 @@
     }
   },
   "validation_limits": [
-    "Source PostgreSQL and object snapshot captured and verified; restoration is pending",
-    "Serving, model identity and inference have not been validated in the destination",
-    "One post-apply plan demonstrated no changes; deployment updates and rollback remain untested"
+    "Source snapshot captured, verified and restored; see snapshot_restore_2026-10-05.json",
+    "Registry identity verified after restoration; destination serving and inference remain pending",
+    "Post-apply and post-restore plans demonstrated no changes; deployment updates and rollback remain untested"
   ],
   "post_apply_plan": {
     "result": "No changes",

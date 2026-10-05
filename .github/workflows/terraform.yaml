@@ -26,7 +26,7 @@ jobs:
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false -input=false -lockfile=readonly
       - run: terraform validate
-      - name: Test bootstrap with mocked Helm provider (no cluster)
+      - name: Test bootstrap and serving stages with mocked Helm provider (no cluster)
         run: terraform test
       - name: Check local tooling shell syntax
         run: bash -n ../../../scripts/install-repro-terraform.sh ../../../scripts/plan-repro.sh

@@ -37,9 +37,9 @@ resource "helm_release" "mlops" {
     file("${local.chart_path}/environments/repro-bootstrap.yaml"),
   ]
 
-  # Overrides are applied last: even a credentials file cannot enable serving.
+  # Overrides are applied last: credentials cannot change the chosen stage.
   set = [
-    { name = "api.enabled", value = "false" },
+    { name = "api.enabled", value = tostring(var.api_enabled) },
     { name = "repro.chartHash", value = local.chart_hash, type = "string" },
   ]
 }

@@ -1,0 +1,28 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied make repro-restore and subsequent make repro-plan output",
+  "git_revision": "b211586c7f2d99e763a13ccc7bbb17c5213fac68",
+  "snapshot": "snapshot-20261005T201656Z.LOW70R",
+  "context": "kind-energy-mlops-repro",
+  "namespace": "energy-mlops-repro",
+  "model": {
+    "name": "ensemble_lgb_xgb_rf_bahia",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+    "source": "models:/m-b5741525f9ce41c98d166288955e9f6b",
+    "download_uri": "s3://mlflow-artifacts/6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts"
+  },
+  "registered_models": ["ensemble_lgb_xgb_bahia", "ensemble_lgb_xgb_rf_bahia"],
+  "verified_objects": 251,
+  "verified_bytes": 1829741640,
+  "deployments_ready": {"mlflow": "1/1", "postgres": "1/1", "rustfs": "1/1"},
+  "volumes": {"postgres-pvc": "Bound", "rustfs-pvc": "Bound"},
+  "restore_unit_tests": {"passed": 7, "failed": 0},
+  "post_restore_plan": {"result": "No changes", "api_enabled": false},
+  "validation_limits": [
+    "Destination serving and inference have not yet been exercised",
+    "No cross-store atomic snapshot guarantee",
+    "A no-change plan confirms infrastructure convergence, not model quality or equivalence of every database row",
+    "Deployment updates and rollback remain untested"
+  ]
+}

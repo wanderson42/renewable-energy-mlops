@@ -35,3 +35,14 @@ run "missing_credentials_rejected" {
   }
   expect_failures = [var.secrets_file]
 }
+
+run "serving_enabled_explicitly" {
+  command = plan
+  variables {
+    api_enabled = true
+  }
+  assert {
+    condition     = one([for setting in helm_release.mlops.set : setting.value if setting.name == "api.enabled"]) == "true" && output.deployment_target.api_enabled
+    error_message = "The serving stage must enable the API in the same isolated release."
+  }
+}

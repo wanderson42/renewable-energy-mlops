@@ -1,3 +1,9 @@
+variable "api_enabled" {
+  description = "Enable serving only after restoring and verifying the rehearsal data."
+  type        = bool
+  default     = false
+}
+
 variable "secrets_file" {
   description = "Local Helm credentials file; never commit its contents or state."
   type        = string

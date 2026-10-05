@@ -21,6 +21,17 @@ spec:
           imagePullPolicy: {{ .Values.api.image.pullPolicy | quote }}
           ports:
             - containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 5
           env:
             - name: MLFLOW_TRACKING_URI
               value: "http://mlflow:5000"
