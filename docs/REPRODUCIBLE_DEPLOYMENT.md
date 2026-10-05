@@ -1068,6 +1068,109 @@ operacional da v0.3 continua como referência do acompanhamento longitudinal.
 Depois dessa frente, completar o blueprint AWS com validação estática e mocks,
 sem criar recursos pagos e sem alegar deployment cloud.
 
+## 19. Cliente local isolado: Prefect e dashboard
+
+O launcher [`scripts/repro-client.py`](../scripts/repro-client.py) mantém os
+clientes em **primeiro plano**, no Python do host para a supervisão e no
+ambiente Poetry para os serviços e SDKs. Não altera o chart, Terraform ou
+o deployment existente. Esta seção descreve o procedimento preparado;
+a execução integrada e a interação no navegador ainda precisam de evidência.
+
+| Serviço do ensaio | Endereço local | Origem |
+|---|---|---|
+| FastAPI | `http://127.0.0.1:18000` | Port-forward para `svc/energy-api:8000` |
+| MLflow | `http://127.0.0.1:15000` | Port-forward para `svc/mlflow:5000` |
+| RustFS API | `http://127.0.0.1:19000` | Port-forward para `svc/rustfs:9000` |
+| Prefect API/UI | `http://127.0.0.1:14200` | `poetry run prefect server start` |
+| Dashboard | `http://127.0.0.1:18501` | `poetry run streamlit run` |
+
+Os três port-forwards usam o kubeconfig `.repro/kubeconfig`, contexto
+`kind-energy-mlops-repro` e namespace `energy-mlops-repro`, independentemente
+do contexto global. Antes de abrir processos, o launcher confirma o node do
+ensaio e verifica as cinco portas. Uma porta ocupada bloqueia a inicialização;
+nenhum processo existente é encerrado para liberar espaço.
+
+As credenciais são lidas do deployment MLflow do ensaio, em memória, e passadas
+no ambiente dos filhos. O launcher não escreve segredos no comando, `.env` ou
+perfil global. As configurações críticas de Prefect, MLflow, S3 e da API são
+definidas nesse ambiente. Perfis AWS e tokens de sessão herdados não são usados.
+O chart atual fornece credenciais explícitas; um futuro chart com `secretKeyRef`
+exigirá adaptar a resolução de credenciais, pois o launcher falha nesse caso.
+
+O Prefect usa `PREFECT_HOME` e `PREFECT_PROFILES_PATH` sob
+`.repro/client/prefect/`, perfil `repro` e banco SQLite
+`orchestration.db` nesse mesmo diretório. Esse é um **estado novo de
+orquestração**, preservado entre reinícios do launcher; não é uma restauração
+do histórico Prefect da v0.3. Não são registrados flows, workers, schedules
+ou deployments de treinamento nesta etapa. A inicialização serve a API/UI.
+A configuração segue as
+[regras de settings e perfis do Prefect](https://docs.prefect.io/v3/concepts/settings-and-profiles)
+e a [referência do banco assíncrono](https://reference.prefect.io/prefect/settings/models/server/database/).
+
+Pré-requisitos: serving e restore já validados, Poetry instalado com o
+`poetry.lock` atual, Python `3.14` e kubectl disponível. Não atualizar
+dependências durante o ensaio. No primeiro terminal:
+
+```bash
+git pull --ff-only
+poetry run python -m unittest discover -s tests/infra -p test_repro_client.py -v
+make repro-client
+```
+
+O comando aguarda os serviços e executa um probe dentro do Poetry. Ele verifica:
+
+1. Python `3.14` e versões de Prefect, Streamlit, MLflow, boto3, botocore e
+   s3fs iguais ao lockfile.
+2. Endpoints efetivos da aplicação e settings do Prefect apontando para o
+   ensaio, além da existência do SQLite no diretório privado.
+3. HTTP saudável dos serviços, modelo carregado na API e identidade da
+   v17/Run histórica em `/model-info`, Registry e consulta da Run.
+4. Acesso aos dois buckets e leitura de um `MLmodel`, comparando tamanho e
+   SHA-256 com o manifesto do restore; reconfirmação da identidade da API.
+
+O probe não grava no Registry, PostgreSQL ou RustFS. O próprio Prefect mantém
+seu estado operacional no SQLite local. A inicialização também não executa
+treinamento ou promoção. O recibo sanitizado é exibido e salvo em
+`.repro/client-validation.json`. Os logs brutos ficam privados em
+`.repro/client/*.log`; não publicá-los sem revisão, pois podem conter mensagens
+de dependências ou valores de configuração.
+
+Com o primeiro terminal aberto, no segundo:
+
+```bash
+make repro-client-check
+kubectl config current-context
+curl -fsS --max-time 5 http://localhost:8000/model-info
+```
+
+O check repete as consultas com o mesmo ambiente. Os últimos dois comandos
+conferem o contexto global e a identidade da origem. No navegador, abrir os
+endereços do dashboard `18501` e Prefect `14200`. No dashboard, confirmar o
+endpoint da API `18000`, modelo/versão, inferência pela interface e artefatos
+SHAP da Run servida; na aba de monitoring, conferir o relatório restaurado e
+seus arquivos/plots. Essa inspeção exige uma sessão Streamlit real, e a
+meteorologia day-ahead consultada pelo dashboard ainda depende de Open-Meteo.
+O health HTTP do Streamlit sozinho **não comprova execução da página nem E2E**.
+O recibo registra explicitamente `dashboard_browser_e2e="not exercised by this gate"`.
+
+Ao terminar, `Ctrl+C` no primeiro terminal encerra somente os grupos de
+processos criados por essa execução. O launcher também faz limpeza ao detectar
+falha de um filho ou receber `SIGTERM`. Não apaga o SQLite, snapshots ou PVCs.
+Uma interrupção abrupta como `SIGKILL` não permite executar essa limpeza.
+Os port-forwards não são reiniciados automaticamente: se caírem, a execução
+interrompe e o operador pode iniciá-la novamente após o diagnóstico.
+
+Não usar `make ports` ou `make stop-ports` enquanto o launcher estiver ativo:
+os targets históricos usam encerramento global por padrão de processo e podem
+interromper os novos servidores Prefect/Streamlit. O launcher do ensaio não
+chama esses targets.
+
+Oito testes sem cluster verificam overrides sem mutar o ambiente pai, alvo
+explícito, bloqueios de porta/node incorretos, encerramento dos grupos próprios,
+limpeza após falha e proteção dos logs/recibo. Esses testes também fazem parte
+do workflow Helm. A etapa será consolidada após as verificações reais de
+startup, cliente e navegador; o blueprint AWS permanece uma frente posterior.
+
 ## Referências do projeto
 
 - [Operação atual](OPERATIONS.md)

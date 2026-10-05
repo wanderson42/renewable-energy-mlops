@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 
 .PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan repro-inventory repro-backup repro-restore repro-serving-plan repro-serving-apply repro-validate repro-checkpoint repro-failure-plan repro-rollback repro-recovery-test repro-release-plan repro-mlflow-build repro-mlflow-apply repro-mlflow-validate
+.PHONY: repro-client repro-client-check
 export REPRO_API_DIGEST
 PORT_LOG_DIR := .ports
 
@@ -111,6 +112,12 @@ repro-mlflow-apply:
 
 repro-mlflow-validate:
 	@python3 scripts/validate-mlflow-runtime.py
+
+repro-client:
+	@python3 scripts/repro-client.py start
+
+repro-client-check:
+	@python3 scripts/repro-client.py check
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."

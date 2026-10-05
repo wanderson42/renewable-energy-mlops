@@ -426,8 +426,9 @@ A fase v1.0 já exercitou, em um KinD separado, provisionamento por Terraform/He
 restauração, serving pareado da v17 e recuperação declarativa de uma falha de
 pull, com PVCs preservados e plano final sem mudanças. O runtime MLflow foi
 empacotado, publicado no GHCR e validado no ensaio por digest, com Registry e
-leitura/hash de artefato aprovados. A reprodução de Prefect/dashboard e o
-blueprint AWS seguem em andamento. O escopo, as evidências
+leitura/hash de artefato aprovados. `make repro-client` prepara Prefect e dashboard
+em portas e estado próprios, usando o ambiente Poetry; sua validação integrada
+e visual no ensaio está pendente. O blueprint AWS segue em andamento. O escopo, as evidências
 e os critérios de aceitação estão em
 [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
