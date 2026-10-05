@@ -25,7 +25,7 @@ resource "helm_release" "mlops" {
   create_namespace = true
   chart            = local.chart_path
   wait             = true
-  timeout          = 600
+  timeout          = var.deployment_timeout_seconds
   # Retain failed installs for diagnosis; do not delete data on a timeout.
   atomic          = false
   upgrade_install = false
@@ -40,6 +40,7 @@ resource "helm_release" "mlops" {
   # Overrides are applied last: credentials cannot change the chosen stage.
   set = [
     { name = "api.enabled", value = tostring(var.api_enabled) },
+    { name = "api.image.digest", value = var.api_digest, type = "string" },
     { name = "repro.chartHash", value = local.chart_hash, type = "string" },
   ]
 }

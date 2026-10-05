@@ -35,11 +35,14 @@ def predictions():
 def plan():
     before = {"name": "energy-mlops-repro", "namespace": "energy-mlops-repro"}
     target = {"context": "kind-energy-mlops-repro", "namespace": "energy-mlops-repro",
-              "release": "energy-mlops-repro", "api_enabled": True}
+              "release": "energy-mlops-repro", "api_enabled": True,
+              "api_digest": MODULE.DEFAULT_DIGEST, "deployment_timeout_seconds": 600}
+    before["set"] = [{"name": "api.enabled", "value": "true"}, {"name": "repro.chartHash", "value": "a" * 64}]
     return {"variables": {"api_enabled": {"value": "true"}},
             "planned_values": {"outputs": {"deployment_target": {"value": target}}}, "resource_changes": [
         {"address": "helm_release.mlops", "change": {"actions": ["update"],
-         "before": before, "after": {**before, "set": [{"name": "api.enabled", "value": "true"}]}}}
+         "before": before, "after": {**before, "timeout": 600,
+         "set": [*[dict(item) for item in before["set"]], {"name": "api.image.digest", "value": MODULE.DEFAULT_DIGEST}]}}}
     ]}
 
 
@@ -156,7 +159,7 @@ class ServingDeploymentTests(unittest.TestCase):
         with patch.object(MODULE, "check_target"), patch.object(MODULE, "check_restore"), \
              patch.object(MODULE, "run", side_effect=execute), patch.object(MODULE, "validate_serving") as gate:
             MODULE.serving_apply()
-        self.assertEqual(json.loads((self.root / ".repro/deployment.tfvars.json").read_text()), {"api_enabled": True})
+        self.assertEqual(json.loads((self.root / ".repro/deployment.tfvars.json").read_text()), MODULE.configuration({}))
         self.assertEqual((self.root / ".repro/deployment.tfvars.json").stat().st_mode & 0o777, 0o600)
         self.assertEqual(calls[-1], MODULE.terraform("apply", "-input=false", str(self.root / ".repro/serving.tfplan")))
         gate.assert_called_once()
@@ -211,6 +214,102 @@ class ServingDeploymentTests(unittest.TestCase):
         self.assertFalse((self.root / ".repro/serving-validation.json").exists())
 
 
+class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / ".repro").mkdir(mode=0o700)
+        self.root_patch = patch.object(MODULE, "ROOT", self.root)
+        self.root_patch.start()
+        self.volumes = {"postgres-pvc": "postgres-uid", "rustfs-pvc": "rustfs-uid"}
+        self.result = {"model": metadata(), "image": MODULE.IMAGE, "validated_at": "2026-10-05T21:25:47Z",
+                       "max_absolute_difference": {"predicted_fc": 0.0, "predicted_mw": 0.0}}
+        self.saved = {**self.result, "configuration": MODULE.configuration({}), "pvc_identity": self.volumes}
+
+    def tearDown(self):
+        self.root_patch.stop()
+        self.temp.cleanup()
+
+    def test_checkpoint_requires_successful_gate_and_preserves_bound_pvc_identity(self):
+        with patch.object(MODULE, "validate_serving", side_effect=RuntimeError("unhealthy")), self.assertRaises(RuntimeError):
+            MODULE.checkpoint()
+        self.assertFalse((self.root / ".repro/rollback-checkpoint.json").exists())
+        with patch.object(MODULE, "validate_serving", return_value=self.result), patch.object(MODULE, "volume_identity", return_value=self.volumes):
+            saved = MODULE.checkpoint()
+        self.assertEqual(saved["pvc_identity"], self.volumes)
+        self.assertEqual((self.root / ".repro/rollback-checkpoint.json").stat().st_mode & 0o777, 0o600)
+
+    def test_mismatched_checkpoint_volumes_prevent_all_rollback_mutations(self):
+        MODULE.write_private(self.root / ".repro/rollback-checkpoint.json", self.saved)
+        with patch.object(MODULE, "check_target"), patch.object(MODULE, "volume_identity", return_value={}), \
+             patch.object(MODULE, "serving_plan") as prepare, self.assertRaises(RuntimeError):
+            MODULE.rollback()
+        prepare.assert_not_called()
+        self.assertFalse((self.root / ".repro/deployment.tfvars.json").exists())
+
+    def test_recovery_rejects_chart_credentials_and_non_digest_setting_changes(self):
+        MODULE.require_image_only_change(plan())
+        for field in ("version", "values", "chart"):
+            changed = plan()
+            changed["resource_changes"][0]["change"]["after"][field] = "different"
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                MODULE.require_image_only_change(changed)
+        changed = plan()
+        changed["resource_changes"][0]["change"]["after"]["set"][1]["value"] = "b" * 64
+        with self.assertRaises(RuntimeError):
+            MODULE.require_image_only_change(changed)
+
+    def test_digest_and_wait_deadline_must_match_evaluated_output(self):
+        for field, value in (("api_digest", "sha256:" + "b" * 64), ("deployment_timeout_seconds", 60)):
+            changed = plan()
+            changed["planned_values"]["outputs"]["deployment_target"]["value"][field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                MODULE.inspect_plan(changed)
+
+    def test_rollback_reapplies_checkpoint_and_handles_failed_status_with_unchanged_inputs(self):
+        MODULE.write_private(self.root / ".repro/rollback-checkpoint.json", self.saved)
+        MODULE.write_private(self.root / ".repro/deployment.tfvars.json", {"api_digest": MODULE.FAILURE_DIGEST, "deployment_timeout_seconds": 60})
+        update = plan()
+        update["resource_changes"][0]["change"]["before"]["status"] = "failed"
+        update["resource_changes"][0]["change"]["after"]["status"] = "deployed"
+        with patch.object(MODULE, "check_target"), patch.object(MODULE, "volume_identity", return_value=self.volumes), \
+             patch.object(MODULE, "serving_plan", return_value=update), patch.object(MODULE, "serving_apply", return_value=self.result) as apply:
+            restored = MODULE.rollback()
+        self.assertEqual(restored["image"], MODULE.IMAGE)
+        self.assertEqual(json.loads((self.root / ".repro/deployment.tfvars.json").read_text()), self.saved["configuration"])
+        apply.assert_called_once()
+
+    def exercise_recovery(self, reason):
+        pods = {"items": [{"status": {"containerStatuses": [{"state": {"waiting": {"reason": reason}}}]}}]}
+        unchanged = plan()
+        unchanged["resource_changes"][0]["change"]["actions"] = ["no-op"]
+
+        def execute(args, **kwargs):
+            return json.dumps(pods if "pods" in args else unchanged)
+
+        with patch.object(MODULE, "checkpoint"), patch.object(MODULE, "failure_plan"), \
+             patch.object(MODULE, "serving_apply", side_effect=subprocess.CalledProcessError(1, ["terraform", "apply"])), \
+             patch.object(MODULE, "rollback", return_value=self.result) as rollback, patch.object(MODULE, "run", side_effect=execute):
+            try:
+                MODULE.recovery_test()
+            finally:
+                rollback.assert_called_once()
+
+    def test_controlled_pull_failure_is_recovered_and_evidence_requires_no_change_plan(self):
+        (self.root / ".repro/terraform-apply.log").write_text("FAKE_PRIVATE_DIAGNOSTIC")
+        self.exercise_recovery("ImagePullBackOff")
+        evidence = json.loads((self.root / ".repro/recovery-validation.json").read_text())
+        self.assertTrue(evidence["expected_pull_failure"])
+        self.assertEqual(evidence["post_recovery_plan"], "No changes")
+        self.assertEqual((self.root / ".repro/recovery-failed-apply.log").read_text(), "FAKE_PRIVATE_DIAGNOSTIC")
+        self.assertNotIn("FAKE_PRIVATE_DIAGNOSTIC", json.dumps(evidence))
+
+    def test_unexpected_failure_still_runs_rollback_and_never_reports_success(self):
+        with self.assertRaises(RuntimeError):
+            self.exercise_recovery("CrashLoopBackOff")
+        self.assertFalse((self.root / ".repro/recovery-validation.json").exists())
+
+
 class PlanWrapperTests(unittest.TestCase):
     def test_later_plans_preserve_serving_and_serving_plan_does_not_apply(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -241,7 +340,7 @@ elif "show" in sys.argv:
             kubectl.chmod(0o755)
             environment = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
                            "CALL_LOG": str(root / "calls.jsonl"), "FAKE_PLAN_JSON": json.dumps(plan())}
-            for args in ([], ["--serving"]):
+            for args in ([], ["--serving"], ["--serving", MODULE.FAILURE_DIGEST, "60"]):
                 result = subprocess.run(["bash", str(root / "scripts/plan-repro.sh"), *args],
                                         env=environment, text=True, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -249,10 +348,12 @@ elif "show" in sys.argv:
                 self.assertIn("RAW_FAKE_SECRET_KEEP_PRIVATE", (root / ".repro/terraform-plan.log").read_text())
             calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
             plans = [args for args in calls if "plan" in args]
-            self.assertEqual(len(plans), 2)
+            self.assertEqual(len(plans), 3)
             self.assertTrue(all(f"-var-file={root / '.repro/deployment.tfvars.json'}" in args for args in plans))
             self.assertIn("-var=api_enabled=true", plans[1])
             self.assertIn(f"-out={root / '.repro/serving.tfplan'}", plans[1])
+            self.assertIn(f"-var=api_digest={MODULE.FAILURE_DIGEST}", plans[2])
+            self.assertIn("-var=deployment_timeout_seconds=60", plans[2])
             self.assertFalse(any("apply" in args for args in calls))
             count = len(calls)
             result = subprocess.run(["bash", str(root / "scripts/plan-repro.sh")],
@@ -304,6 +405,8 @@ output "deployment_target" {
     namespace = "energy-mlops-repro"
     release = "energy-mlops-repro"
     api_enabled = var.api_enabled
+    api_digest = "sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188"
+    deployment_timeout_seconds = 600
   }
 }
 ''')

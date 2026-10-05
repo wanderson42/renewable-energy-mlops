@@ -4,6 +4,26 @@ variable "api_enabled" {
   default     = false
 }
 
+variable "api_digest" {
+  description = "Immutable API image reference; the default is the validated v17 baseline."
+  type        = string
+  default     = "sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188"
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.api_digest))
+    error_message = "Use a complete lowercase sha256 digest."
+  }
+}
+
+variable "deployment_timeout_seconds" {
+  description = "Helm wait deadline; the failure rehearsal explicitly uses 60 seconds."
+  type        = number
+  default     = 600
+  validation {
+    condition     = var.deployment_timeout_seconds >= 60 && var.deployment_timeout_seconds <= 900 && floor(var.deployment_timeout_seconds) == var.deployment_timeout_seconds
+    error_message = "Use an integer wait deadline between 60 and 900 seconds."
+  }
+}
+
 variable "secrets_file" {
   description = "Local Helm credentials file; never commit its contents or state."
   type        = string

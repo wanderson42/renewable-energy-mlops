@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 
-.PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan repro-inventory repro-backup repro-restore repro-serving-plan repro-serving-apply repro-validate
+.PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan repro-inventory repro-backup repro-restore repro-serving-plan repro-serving-apply repro-validate repro-checkpoint repro-failure-plan repro-rollback repro-recovery-test repro-release-plan
+export REPRO_API_DIGEST
 PORT_LOG_DIR := .ports
 
 # ==============================================================================
@@ -85,6 +86,21 @@ repro-serving-apply:
 
 repro-validate:
 	@python3 scripts/repro-serving.py validate
+
+repro-checkpoint:
+	@python3 scripts/repro-serving.py checkpoint
+
+repro-failure-plan:
+	@python3 scripts/repro-serving.py failure-plan
+
+repro-rollback:
+	@python3 scripts/repro-serving.py rollback
+
+repro-recovery-test:
+	@python3 scripts/repro-serving.py recovery-test
+
+repro-release-plan:
+	@python3 scripts/repro-serving.py release-plan
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."

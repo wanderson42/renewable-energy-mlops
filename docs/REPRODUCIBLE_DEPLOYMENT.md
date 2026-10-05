@@ -11,8 +11,10 @@ implementá-lo. O KinD de ensaio foi criado e validado pelo operador em
 05/10/2026. O primeiro `terraform apply` instalou PostgreSQL, RustFS e MLflow no ensaio,
 com a API desabilitada. O snapshot foi restaurado, a identidade da v17 foi
 confirmada no Registry do destino e o plano posterior retornou `No changes`.
-O procedimento de habilitação e gate HTTP está implementado; sua execução
-real permanece pendente. O rollout operacional da origem permanece manual.
+O procedimento de habilitação e gate HTTP foi executado: a API do ensaio serve
+a v17 e reproduziu exatamente o lote pareado da origem. O plano posterior
+retornou `No changes` com serving habilitado. O rollout operacional da origem
+permanece manual. Recuperação de rollout e blueprint AWS continuam pendentes.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -157,15 +159,15 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [x] Inventário da v0.3 capturado, incluindo imagens dos workloads, imagem do node e versão do KinD.
 - [x] Configuração KinD reproduzida em um cluster separado; node Ready e StorageClass disponível.
 - [x] PostgreSQL, RustFS e MLflow provisionados por Terraform no cluster separado, com PVCs Bound.
-- [ ] Serving habilitado e validado após a restauração no cluster separado.
-- [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
+- [x] Serving habilitado e validado após a restauração no cluster separado.
+- [x] Operação simultânea das APIs de origem e ensaio sem conflito de portas/processos.
 - [x] Buckets e dados mínimos disponíveis no ambiente de ensaio.
 - [x] Snapshot de metadata e conteúdo dos dois buckets capturado e verificado.
 - [x] Snapshot restaurado e identidade do modelo verificada no destino.
-- [ ] Gate HTTP e smoke de referência aprovados no destino.
+- [x] Gate HTTP e lote pareado `paired_synthetic_batch_v1` aprovados no destino.
 - [x] Terraform instala a release e um novo plano após o apply não apresenta mudanças.
 - [ ] Atualização por digest e rollback exercitados com validação.
-- [ ] Automação de deployment executada de ponta a ponta.
+- [x] Automação de deployment local executada: plano, apply, rollout e gate.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
 
 ## 7. Inventário coletado e perfil Helm
@@ -407,10 +409,11 @@ A evidência está em
 Esse marco comprova o provisionamento real da infraestrutura pelo Terraform.
 Um segundo plano apresentou `No changes`, e os dois testes Terraform com mocks
 passaram na máquina do operador. A restauração posterior do Registry está
-documentada na seção 12; a equivalência de inferência permanece pendente.
+documentada na seção 12; a equivalência de inferência no lote pareado foi
+demonstrada posteriormente, conforme a seção 14.
 Até a conclusão dessa restauração, a API permaneceu desabilitada.
-O critério de aceitação da instalação do sistema completo continua pendente
-até o serving também ser exercitado.
+O serving foi exercitado posteriormente. A reprodução do sistema completo
+ainda exige as demais fronteiras de aceitação descritas neste documento.
 
 Antes de preparar o snapshot:
 
@@ -688,7 +691,7 @@ timestamp, payload e respostas. Para repetir somente o gate: `make repro-validat
 Um arquivo de resultado anterior comprova apenas seu timestamp; o exit code da
 execução atual determina se a nova validação passou.
 
-Quinze testes de serving verificam isolamento, preservação do estágio entre planos,
+A suíte de serving verifica isolamento, preservação do estágio entre planos,
 recusa de planos destrutivos, falha do apply, cleanup do port-forward e gates de
 identidade/inferência, redação do resumo e avaliação de inputs pelo Terraform.
 O teste de avaliação usa um plano real sem providers e uma fixture da atualização
@@ -696,12 +699,13 @@ Helm, sem cluster. Ele roda quando o CLI Terraform está disponível no PATH ou 
 `.repro/bin/terraform`; caso contrário, é marcado como skip.
 O provider Helm não inicia no runtime do editor, mas o operador já aprovou
 `validate` e os três testes Terraform com mocks na revisão `c6d8d09`.
-O serving real permanece pendente. O JSON do plano é inspecionado em memória e
+O serving real passou na revisão `1adebdb`, conforme a seção 14. O JSON do plano é inspecionado em memória e
 não é impresso integralmente, pois contém valores sensíveis. Não publicar state,
 plano binário ou arquivos privados de `.repro/`.
-O gate não executa treino, promoção ou reload. Não há rollback automático nesta
-etapa; falhas preservam os recursos para diagnóstico. O exercício de atualização
-por outro digest e recuperação continua pendente.
+O gate não executa treino, promoção ou reload. O apply comum preserva falhas
+para diagnóstico; o novo roteiro de recuperação controlada descrito na seção 14
+tenta restaurar o checkpoint após sua falha intencional. Seu exercício real
+continua pendente.
 
 ## 13. Correção do review do plano e proteção da saída
 
@@ -733,6 +737,95 @@ Após atualizar e rodar os quinze testes de serving, gere um novo
 `make repro-serving-plan`. O resumo deve continuar em `0/1/0` e confirmar o
 destino de ensaio e `api.enabled=true`. Depois, `make repro-serving-apply`
 executa o plano e o gate; `make repro-plan` deve retornar `No changes`.
+
+## 14. Serving reproduzido e ensaio de recuperação
+
+Na revisão `1adebdb`, o operador aprovou os quinze testes Python, o review
+corrigido do plano, o apply e o gate HTTP. Em `2026-10-05T21:25:47.017356+00:00`,
+a API do ensaio confirmou a v17 e a Run histórica, as mesmas métricas, o digest
+do deployment/pod e o modelo carregado. O lote pareado retornou os mesmos
+valores nos dois ambientes:
+
+| Hora UTC de 04/10/2026 | FC | MW |
+|---|---|---|
+| 10:00 | 0.06623484449484646 | 780.6637476696087 |
+| 11:00 | 0.056608779451567344 | 667.2080572500081 |
+| 12:00 | 0.05344438716699102 | 629.9115804663062 |
+
+A diferença máxima foi zero em FC e MW. O plano após o apply retornou
+`No changes`, preservando `api.enabled=true` e chart `0.1.4`.
+Payload, respostas e identidade estão em
+[`evidence/serving_reproduction_2026-10-05.json`](evidence/serving_reproduction_2026-10-05.json).
+Isso comprova equivalência do serving nesse lote sintético, não precisão em
+ground truth ou generalização de novas versões da aplicação.
+
+### Recuperação declarativa de falha de pull
+
+O Terraform passa a aceitar `api_digest` e `deployment_timeout_seconds`, com
+padrões iguais ao digest validado e 600s. Digest incompleto e timeout fora de
+60–900s são recusados. Os overrides finais continuam mantendo contexto,
+namespace, release e estágio explícitos. A intenção local persiste digest e
+timeout para que os planos seguintes usem a mesma configuração.
+
+```bash
+poetry run python -m unittest discover -s tests/infra -p test_repro_serving.py -v
+.repro/bin/terraform -chdir=terraform/environments/local test
+make repro-recovery-test
+```
+
+Esse último target **provoca uma falha intencional somente no ensaio**:
+
+1. Valida novamente o serving atual e salva um checkpoint privado de imagem,
+   configuração, identidade do modelo e UIDs dos dois PVCs Bound.
+2. Planeja a mesma release com `sha256:` seguido de 64 zeros e timeout Helm de
+   60s. Trata-se de uma referência reservada sem artefato publicado, não de uma
+   nova versão funcional. Recusa mudanças de chart, hash do chart ou inputs.
+3. Aplica a configuração, espera erro e consulta os pods para confirmar
+   `ErrImagePull` ou `ImagePullBackOff`. Não publica mensagens brutas de erro.
+4. Após tentar essa atualização, executa o rollback declarativo em `finally`:
+   restaura a intenção do checkpoint, gera um novo plano e aplica pelo Terraform.
+   Não usa `helm rollback`, `kubectl set image`, substituição ou destruição.
+5. Repete o gate de digest, saúde, identidade e inferência pareada; verifica os
+   mesmos UIDs de PVC e exige plano posterior `No changes`.
+
+O provider Helm `3.3.0` observa o status da release no refresh e planeja o estado
+`deployed`; o roteiro também suporta o caso de uma tentativa falhada não ter
+gravado o novo digest no state. O rollback passa pela mesma validação de
+escopo e só permite alterações de digest/timeout e recuperação do status.
+Código de referência:
+[`resource_helm_release.go` em v3.3.0](https://github.com/hashicorp/terraform-provider-helm/blob/v3.3.0/helm/resource_helm_release.go).
+
+O relatório final fica em `.repro/recovery-validation.json`. O diagnóstico
+sanitizado fica em `.repro/recovery-failure.json`; o log privado da tentativa
+falhada é preservado em `.repro/recovery-failed-apply.log`. A confirmação de
+falha tem prazo Helm de 60s, mas o comando completo inclui consultas, novos
+planos, recuperação e HTTP; não se promete duração total de 60s.
+
+Se a recuperação não terminar, o checkpoint permanece disponível:
+
+```bash
+make repro-rollback
+```
+
+Uma falha diferente da esperada continua sendo erro mesmo após recuperar o
+checkpoint. Se o planejamento falhar antes de tentar o apply, nenhum workload
+é alterado. Não rodar planos/applies concorrentes durante o ensaio.
+Os targets separados `repro-checkpoint`, `repro-failure-plan` e
+`repro-serving-apply` existem para inspeção por etapas; `repro-rollback` usa o
+checkpoint já salvo, sem exigir que a imagem falhada esteja saudável.
+
+Para uma futura imagem funcional já publicada, há `make repro-release-plan
+REPRO_API_DIGEST=sha256:...`, seguido de review e `make repro-serving-apply`.
+O gate valida o digest selecionado, preservando o protocolo da v17 restaurada.
+O exercício com digest indisponível demonstra detecção e recuperação de falha
+de pull; não substitui a validação de upgrade funcional, migração de dados ou
+rollback para outro modelo. Não há restauro do banco nessa recuperação.
+
+Vinte e dois testes Python passaram nesta revisão, incluindo checkpoint,
+escopo limitado a imagem, recuperação após erro esperado/inesperado, preservação
+do diagnóstico e plano sem mudanças. A configuração Terraform tem cinco testes
+com mocks para executar no host/CI; o ensaio real de recuperação ainda não foi
+executado. O runtime MLflow e o blueprint AWS continuam como frentes posteriores.
 
 ## Referências do projeto
 

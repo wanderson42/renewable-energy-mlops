@@ -7,13 +7,13 @@ import sys
 
 def selected_settings(resource):
     return {item["name"]: item["value"] for item in (resource or {}).get("set", [])
-            if item["name"] in ("api.enabled", "repro.chartHash")}
+            if item["name"] in ("api.enabled", "api.image.digest", "repro.chartHash")}
 
 
 def safe_value(field, value):
     if value is None:
         return None
-    patterns = {"api.enabled": r"true|false", "repro.chartHash": r"[a-f0-9]{64}",
+    patterns = {"api.enabled": r"true|false", "api.image.digest": r"sha256:[a-f0-9]{64}", "repro.chartHash": r"[a-f0-9]{64}",
                 "version": r"\d+\.\d+\.\d+"}
     return value if isinstance(value, str) and re.fullmatch(patterns[field], value) else "[redacted/unexpected]"
 
@@ -41,7 +41,9 @@ def review(plan):
                                       "after": safe_value("version", after.get("version"))},
                     "settings": {field: {"before": safe_value(field, settings_before.get(field)),
                                          "after": safe_value(field, settings_after.get(field))}
-                                 for field in ("api.enabled", "repro.chartHash")},
+                                 for field in ("api.enabled", "api.image.digest", "repro.chartHash")},
+                    "wait_timeout_seconds": {side: value if isinstance(value, (int, float)) and 60 <= value <= 900 else "[unknown/unexpected]"
+                                             for side, value in (("before", before.get("timeout")), ("after", after.get("timeout")))},
                     "helm_input_values_changed": before.get("values") != after.get("values")}
         resources.append(resource)
     target = plan.get("planned_values", {}).get("outputs", {}).get("deployment_target", {}).get("value", {})

@@ -23,6 +23,11 @@ fi
 if [[ "${1:-}" == --serving ]]; then
   plan_args+=("-var=api_enabled=true")
   plan_file="$project_root/.repro/serving.tfplan"
+  if [[ $# -eq 3 && "$2" =~ ^sha256:[a-f0-9]{64}$ && "$3" =~ ^[0-9]+$ ]]; then
+    plan_args+=("-var=api_digest=$2" "-var=deployment_timeout_seconds=$3")
+  elif [[ $# -ne 1 ]]; then
+    echo "Use --serving ou --serving DIGEST TIMEOUT." >&2; exit 1
+  fi
 elif [[ $# -gt 0 ]]; then
   echo "Argumento desconhecido." >&2; exit 1
 fi

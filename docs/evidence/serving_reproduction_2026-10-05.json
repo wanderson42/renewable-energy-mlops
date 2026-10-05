@@ -1,0 +1,109 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied corrected plan, apply, serving gate and subsequent no-change plan",
+  "git_revision": "1adebdbc24a125443153b9c041fa6d725c9058e4",
+  "serving_unit_tests": {
+    "passed": 15,
+    "failed": 0
+  },
+  "plan": {
+    "added": 0,
+    "changed": 1,
+    "destroyed": 0,
+    "helm_input_values_changed": false
+  },
+  "apply_completed": true,
+  "gate": {
+    "validated_at": "2026-10-05T21:25:47.017356+00:00",
+    "model": {
+      "model_name": "ensemble_lgb_xgb_rf_bahia",
+      "alias": "champion",
+      "version": 17,
+      "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+      "metrics": {
+        "oot_mae_mw": 787.1835861175788,
+        "oot_nmae_pct": 6.678801541769502,
+        "oot_mae_fc_pct": 6.678801541769504,
+        "oot_r2_score": 0.8613955426061799
+      }
+    },
+    "payload": {
+      "predictions": [
+        {
+          "date": "2026-10-04T10:00:00Z",
+          "wind_speed_100m": 9.0,
+          "wind_direction_100m": 150.0,
+          "temperature_2m": 25.0
+        },
+        {
+          "date": "2026-10-04T11:00:00Z",
+          "wind_speed_100m": 10.0,
+          "wind_direction_100m": 170.0,
+          "temperature_2m": 26.0
+        },
+        {
+          "date": "2026-10-04T12:00:00Z",
+          "wind_speed_100m": 12.5,
+          "wind_direction_100m": 180.0,
+          "temperature_2m": 27.0
+        }
+      ]
+    },
+    "source_predictions": [
+      {
+        "date": "2026-10-04T10:00:00Z",
+        "predicted_fc": 0.06623484449484646,
+        "predicted_mw": 780.6637476696087
+      },
+      {
+        "date": "2026-10-04T11:00:00Z",
+        "predicted_fc": 0.056608779451567344,
+        "predicted_mw": 667.2080572500081
+      },
+      {
+        "date": "2026-10-04T12:00:00Z",
+        "predicted_fc": 0.05344438716699102,
+        "predicted_mw": 629.9115804663062
+      }
+    ],
+    "destination_predictions": [
+      {
+        "date": "2026-10-04T10:00:00Z",
+        "predicted_fc": 0.06623484449484646,
+        "predicted_mw": 780.6637476696087
+      },
+      {
+        "date": "2026-10-04T11:00:00Z",
+        "predicted_fc": 0.056608779451567344,
+        "predicted_mw": 667.2080572500081
+      },
+      {
+        "date": "2026-10-04T12:00:00Z",
+        "predicted_fc": 0.05344438716699102,
+        "predicted_mw": 629.9115804663062
+      }
+    ],
+    "max_absolute_difference": {
+      "predicted_fc": 0.0,
+      "predicted_mw": 0.0
+    },
+    "absolute_tolerances": {
+      "predicted_fc": 1e-12,
+      "predicted_mw": 1e-09
+    },
+    "reference": "paired_synthetic_batch_v1",
+    "image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
+    "context": "kind-energy-mlops-repro",
+    "namespace": "energy-mlops-repro"
+  },
+  "post_apply_plan": {
+    "result": "No changes",
+    "api_enabled": true,
+    "chart_version": "0.1.4"
+  },
+  "validation_limits": [
+    "Paired synthetic serving comparison; not a new accuracy benchmark or the historical smoke with unavailable payload",
+    "Controlled deployment failure and rollback have not yet been executed",
+    "Source operational rollout remains manual; no claim of full GitOps or AWS deployment"
+  ]
+}
