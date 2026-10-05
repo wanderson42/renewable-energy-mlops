@@ -19,13 +19,17 @@ spec:
           - sh
           - -c
           - |
-            pip install --quiet psycopg2-binary boto3 && \
+            pip install --quiet --no-cache-dir{{ range .Values.mlflow.runtimePackages }} {{ . | squote }}{{ end }} && \
             mlflow server \
               --backend-store-uri postgresql://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@postgres:5432/{{ .Values.postgres.db }} \
               --default-artifact-root s3://mlflow-artifacts/ \
               --host 0.0.0.0 \
               --port 5000 \
               --allowed-hosts "*"
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
         env:
         - name: MLFLOW_PORT
           value: "5000"

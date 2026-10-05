@@ -1,0 +1,32 @@
+name: Terraform local validation
+
+on:
+  push:
+    branches: [main, "infra/**"]
+    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", ".github/workflows/terraform.yaml"]
+  pull_request:
+    branches: [main]
+    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", ".github/workflows/terraform.yaml"]
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: terraform/environments/local
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false -lockfile=readonly
+      - run: terraform validate
+      - name: Test bootstrap with mocked Helm provider (no cluster)
+        run: terraform test
+      - name: Check local tooling shell syntax
+        run: bash -n ../../../scripts/install-repro-terraform.sh ../../../scripts/plan-repro.sh

@@ -11,6 +11,10 @@ shap_importance.csv
 *.log
 .ports/
 .repro/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
 
 # Python / Compilados
 __pycache__/

@@ -116,6 +116,22 @@ class HelmImageTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("image.digest must be sha256", result.stderr)
 
+    def test_mlflow_runtime_matches_observed_server_packages(self) -> None:
+        baseline = json.loads((PROJECT_ROOT / "docs/evidence/deployment_baseline_2026-10-05.json").read_text())
+        result = self.render("-f", "helm/environments/repro.yaml", "--show-only", "templates/mlflow.yaml")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        packages = re.findall(r"'([a-z0-9-]+)==([^']+)'", result.stdout)
+        self.assertEqual(dict(packages), baseline["workloads"]["mlflow"]["runtime"]["packages"])
+
+    def test_bootstrap_readiness_checks_do_not_depend_on_champion(self) -> None:
+        for component, expected in (("mlflow", "port: 5000"), ("rustfs", "port: 9000"), ("postgres", "pg_isready")):
+            with self.subTest(component=component):
+                result = self.render("--show-only", f"templates/{component}.yaml")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("readinessProbe:", result.stdout)
+                self.assertIn(expected, result.stdout)
+                self.assertNotIn("/model-info", result.stdout)
+
     def test_image_without_tag_or_digest_is_rejected(self) -> None:
         for component in ("api", "mlflow", "postgres", "rustfs"):
             with self.subTest(component=component):

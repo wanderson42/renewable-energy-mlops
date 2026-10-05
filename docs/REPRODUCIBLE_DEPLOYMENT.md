@@ -8,8 +8,8 @@ Auditoria inicial realizada em 05/10/2026 na branch
 
 Esta etapa registra o contrato de reprodução e os passos necessários para
 implementá-lo. O KinD de ensaio foi criado e validado pelo operador em
-05/10/2026. A instalação dos workloads, Terraform e o deployment automatizado
-ainda não foram executados. O rollout operacional permanece manual.
+05/10/2026. O root module Terraform local está preparado, mas o provisionamento real dos
+workloads e o deployment automatizado ainda não foram executados. O rollout operacional permanece manual.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -193,9 +193,11 @@ O workflow `Helm chart validation` executa essas verificações em pushes nas
 branches `infra/**` e na `main`, e em PRs para `main`, quando os arquivos
 correspondentes mudam. Ele não aplica manifests nem publica imagens.
 
-O runtime do MLflow ainda instala dependências sem versões no startup. Fixar
-o digest do contêiner resolve a identidade da imagem, mas não essa instalação;
-a correção continua pendente antes de declarar reprodução completa.
+O chart `0.1.3` fixa as nove versões coletadas no runtime do servidor MLflow.
+Ainda há instalação via pip no startup, com dependência de rede/PyPI e sem
+hashes de wheels ou congelamento de todas as dependências transitivas.
+Empacotar esse runtime em imagem própria e validá-la por digest permanece
+pendente antes de declarar reprodução completa.
 
 O operador também confirmou os cinco testes iniciais de renderização na
 máquina de origem. O aviso de lint sobre ícone recomendado é informativo;
@@ -266,7 +268,7 @@ completo. Não é necessário executar `make repro-cluster` novamente.
 
 ### Próxima etapa: infraestrutura antes do serving
 
-O chart `0.1.2` inclui `api.enabled`, com padrão `true`. O perfil
+O chart, desde `0.1.2`, inclui `api.enabled`, com padrão `true`. O perfil
 [`helm/environments/repro-bootstrap.yaml`](../helm/environments/repro-bootstrap.yaml)
 desabilita a API durante a preparação de PostgreSQL, RustFS e MLflow. Ele
 complementa o perfil `repro.yaml`; não contém imagens ou credenciais próprias.
@@ -286,6 +288,107 @@ local, evitando instalar uma release manualmente e precisar importá-la depois.
 O payload exato do smoke histórico também permanece pendente. O notebook de
 governança registra seu timestamp (`2026-10-04T12:00:00Z`) e a saída, mas não
 contém todos os inputs necessários para reconstruir essa requisição.
+
+## 8. Primeiro root module Terraform local
+
+O inventário do servidor confirmou Python `3.11.15` e as nove versões agora
+registradas no baseline. Esse ambiente pertence ao contêiner MLflow; o ambiente
+Python `3.14` do aplicativo continua gerenciado pelo Poetry e pelo seu lockfile.
+Não é necessário adicionar Terraform ao `pyproject.toml` ou trocar o Python do
+projeto. Os testes Python também podem ser executados com `poetry run python`.
+
+O root module está em `terraform/environments/local/`. Ele administra uma única
+`helm_release` no cluster já criado:
+
+| Configuração | Valor |
+|---|---|
+| Terraform CLI | `1.16.5` |
+| Provider Helm | `3.3.0`, com lockfile versionado |
+| Kubeconfig | `.repro/kubeconfig` |
+| Contexto | `kind-energy-mlops-repro` |
+| Namespace e release | `energy-mlops-repro` |
+| Imagens | Digests do perfil `repro.yaml` |
+| API | Desabilitada, inclusive se o arquivo de credenciais definir `api.enabled: true` |
+| State local | `.repro/terraform.tfstate` |
+
+O provider utiliza a biblioteca Helm, sem invocar o CLI Helm instalado no host.
+O Helm `v4.3.0` informado pelo operador pode continuar sendo usado para inspeção;
+a CI de renderização utiliza `3.19.0`. A instalação real via provider ainda deve
+ser validada no ensaio.
+
+As credenciais são lidas do arquivo local já utilizado pelo projeto,
+`helm/values_secrets.yaml`. Ele deve conter `postgres.user`, `postgres.password`,
+`postgres.db`, `rustfs.rootUser` e `rustfs.rootPassword`, todos preenchidos.
+O arquivo não deve ser enviado nem incluído no Git. O plano oculta o conteúdo
+marcado como sensitive, mas state, plano binário e metadata da release Helm
+podem armazenar as credenciais. São arquivos privados do ensaio, não evidências
+publicáveis. O bootstrap protege `.repro/` e os scripts utilizam `umask 077`;
+não habilitar logs de debug nem publicar esses arquivos.
+
+### Instalar somente o Terraform do ensaio
+
+Na raiz do repositório:
+
+```bash
+make repro-tools
+.repro/bin/terraform version
+```
+
+Esse target baixa o binário oficial Linux AMD64 `1.16.5`, compara o SHA256 do
+arquivo ZIP com o checksum oficial fixado no script e instala em `.repro/bin/`.
+Usa apenas ferramentas do sistema e a biblioteca padrão de `python3`; não
+instala pacotes Python, não exige sudo e não altera o ambiente Poetry.
+
+### Gerar o primeiro plano
+
+```bash
+make repro-plan
+```
+
+O target confere o cluster de ensaio, executa `fmt -check`, `init` com o lockfile,
+`validate` e `plan`. Não executa `apply`. A primeira execução deve propor a
+criação de **uma `helm_release.mlops`**, sem alterações ou destruições. Os
+workloads internos do chart não aparecem como recursos Terraform separados.
+A saída deve identificar `energy-mlops-repro`, e `api.enabled` deve ser `false`.
+Se aparecer uma release existente ou uma substituição, investigar a origem do
+state e os recursos no destino antes de continuar.
+
+O plano binário fica em `.repro/bootstrap.tfplan`. Ele é vinculado a este checkout
+local: alterações no chart, nos perfis ou nas credenciais exigem novo plano antes
+da aplicação. Não transportar esse plano para outra máquina.
+
+Após validar esse resultado, o provisionamento usará o plano salvo:
+
+```bash
+.repro/bin/terraform -chdir=terraform/environments/local apply ../../../.repro/bootstrap.tfplan
+
+kubectl --kubeconfig .repro/kubeconfig --context kind-energy-mlops-repro \
+  --namespace energy-mlops-repro get deployments,pods,pvc
+```
+
+O timeout de espera é de dez minutos. Não há exclusão automática em caso de
+falha; inspecionar os pods e a release antes de uma nova tentativa. Não usar
+`helm upgrade`, `helm rollback` ou `terraform destroy` por fora do fluxo durante
+a restauração: Terraform é o responsável pela release, e os PVCs contêm os dados
+do ensaio.
+
+Os readiness checks aguardam PostgreSQL aceitar conexões e MLflow/RustFS
+escutarem suas portas. Isso ainda não valida buckets, autenticação S3, artefatos,
+Registry nem inferência. Esses gates serão executados durante a restauração.
+
+### Validação em CI, sem ambiente real
+
+```bash
+.repro/bin/terraform -chdir=terraform/environments/local init -backend=false -lockfile=readonly
+.repro/bin/terraform -chdir=terraform/environments/local validate
+.repro/bin/terraform -chdir=terraform/environments/local test
+```
+
+O workflow `Terraform local validation` usa um provider Helm simulado e
+credenciais fictícias. Seus testes verificam o destino dedicado, a precedência
+do bloqueio da API e a rejeição de credenciais ausentes. Não acessa Kubernetes
+nem demonstra provisionamento real. O `plan` operacional é uma etapa distinta,
+executada na máquina que possui o kubeconfig do ensaio.
 
 ## Referências do projeto
 

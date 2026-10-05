@@ -17,7 +17,21 @@
     "mlflow": {
       "requested_image": "ghcr.io/mlflow/mlflow:v3.16.1-full",
       "image_id": "ghcr.io/mlflow/mlflow@sha256:6af326440af64565c2ea5d1d28c9ee355f70a8d4af5b76e35938365e1ce2e428",
-      "ready_replicas": 1
+      "ready_replicas": 1,
+      "runtime": {
+        "python": "3.11.15",
+        "packages": {
+          "mlflow": "3.16.1",
+          "boto3": "1.43.96",
+          "botocore": "1.43.96",
+          "psycopg2-binary": "2.9.13",
+          "s3transfer": "0.19.2",
+          "jmespath": "1.1.0",
+          "urllib3": "2.8.0",
+          "python-dateutil": "2.9.0.post0",
+          "six": "1.17.0"
+        }
+      }
     },
     "postgres": {
       "requested_image": "postgres:13",
@@ -31,8 +45,18 @@
     }
   },
   "volumes": {
-    "postgres-pvc": {"status": "Bound", "capacity": "2Gi", "storage_class": "standard", "access_mode": "RWO"},
-    "rustfs-pvc": {"status": "Bound", "capacity": "5Gi", "storage_class": "standard", "access_mode": "RWO"}
+    "postgres-pvc": {
+      "status": "Bound",
+      "capacity": "2Gi",
+      "storage_class": "standard",
+      "access_mode": "RWO"
+    },
+    "rustfs-pvc": {
+      "status": "Bound",
+      "capacity": "5Gi",
+      "storage_class": "standard",
+      "access_mode": "RWO"
+    }
   },
   "model": {
     "model_name": "ensemble_lgb_xgb_rf_bahia",
@@ -51,5 +75,6 @@
     "No PostgreSQL or RustFS snapshot restored",
     "Exact smoke payload still pending",
     "Platform-specific image IDs require registry availability verification before provisioning"
-  ]
+  ],
+  "helm_cli_version": "v4.3.0+gbec5b06"
 }

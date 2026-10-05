@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: ports stop-ports status validate repro-cluster
+.PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan
 PORT_LOG_DIR := .ports
 
 # ==============================================================================
@@ -61,6 +61,12 @@ ports: stop-ports
 # Cria somente o KinD de ensaio, usando kubeconfig separado.
 repro-cluster:
 	@bash scripts/create-repro-cluster.sh
+
+repro-tools:
+	@bash scripts/install-repro-terraform.sh
+
+repro-plan:
+	@bash scripts/plan-repro.sh
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."

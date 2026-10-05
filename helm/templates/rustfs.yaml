@@ -29,6 +29,10 @@ spec:
         - name: rustfs
           image: {{ include "energy-mlops.image" .Values.rustfs.image | quote }}
           imagePullPolicy: {{ .Values.rustfs.image.pullPolicy | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            periodSeconds: 5
           env:
             - name: RUSTFS_ACCESS_KEY
               value: {{ .Values.rustfs.rootUser | quote }}
