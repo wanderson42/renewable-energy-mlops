@@ -151,7 +151,7 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 
 ## 6. Critérios de aceitação
 
-- [x] Inventário dos workloads da v0.3 capturado, incluindo imagens realmente executadas; imagem do node KinD ainda pendente.
+- [x] Inventário da v0.3 capturado, incluindo imagens dos workloads, imagem do node e versão do KinD.
 - [ ] Configuração KinD e instalação Helm reproduzidas em um cluster separado.
 - [ ] Operação simultânea dos dois ambientes sem conflito de portas/processos.
 - [ ] Buckets e dados mínimos disponíveis no ambiente de ensaio.
@@ -185,7 +185,7 @@ Validação local do chart, sem acesso a Kubernetes:
 ```bash
 helm lint helm --strict
 helm lint helm --strict -f helm/environments/repro.yaml
-python -m unittest discover -s tests/infra -p test_helm_chart.py -v
+python3 -m unittest discover -s tests/infra -p test_helm_chart.py -v
 ```
 
 O workflow `Helm chart validation` executa essas verificações em pushes nas
@@ -196,12 +196,57 @@ O runtime do MLflow ainda instala dependências sem versões no startup. Fixar
 o digest do contêiner resolve a identidade da imagem, mas não essa instalação;
 a correção continua pendente antes de declarar reprodução completa.
 
-Para completar a referência do cluster de origem, coletar também:
+O operador também confirmou os cinco testes de renderização na máquina de
+origem. O aviso de lint sobre ícone recomendado é informativo; os dois perfis
+passaram em `helm lint --strict`.
+
+### Criação do KinD separado
+
+O node foi identificado como
+`kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5`.
+A versão do CLI observada é
+`kind v0.34.0-alpha+aa74c7f3e55dba go1.26.7 linux/amd64`.
+O ensaio inicial utiliza esse tooling existente. A distribuição do CLI para
+reprodução por terceiros ainda precisa ser definida e validada; a versão alpha
+não é apresentada como release estável.
+
+A configuração do novo cluster está em
+[`infra/kind/repro.yaml`](../infra/kind/repro.yaml). Ela usa um control-plane,
+node fixado por digest e API ligada ao loopback. Não configura portas de
+aplicação nem mounts para diretórios do cluster operacional.
+
+Criar somente o cluster de ensaio:
 
 ```bash
-kind version
-docker inspect energy-mlops-control-plane --format '{{.Config.Image}}'
+make repro-cluster
 ```
+
+O target verifica Docker, KinD e kubectl, recusa recriar um cluster existente e
+recusa sobrescrever um kubeconfig existente. Usa explicitamente o runtime
+Docker, o nome `energy-mlops-repro` e o arquivo `.repro/kubeconfig`, protegido
+com permissões locais e ignorado pelo Git. Não utiliza o `make ports`.
+
+Após criar o cluster, conferir seu acesso e a referência operacional:
+
+```bash
+kubectl --kubeconfig .repro/kubeconfig \
+  --context kind-energy-mlops-repro get nodes -o wide
+
+kubectl --kubeconfig .repro/kubeconfig \
+  --context kind-energy-mlops-repro get storageclass
+
+kubectl config current-context
+curl -fsS --max-time 5 http://localhost:8000/model-info
+```
+
+O último contexto deve continuar sendo o da origem (`kind-energy-mlops`, no
+ambiente inventariado). O uso de `--kubeconfig` explícito pelo bootstrap evita
+alterar o kubeconfig operacional. A resposta da API de origem deve continuar
+identificando v17 e a Run documentada.
+
+O bootstrap ainda não instala workloads nem restaura dados. Se a criação falhar,
+inspecionar o cluster e `.repro/kubeconfig` antes de tentar novamente; o script
+não faz exclusão nem limpeza automática de recursos.
 
 O payload exato do smoke histórico também permanece pendente. O notebook de
 governança registra seu timestamp (`2026-10-04T12:00:00Z`) e a saída, mas não

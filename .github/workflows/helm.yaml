@@ -8,6 +8,10 @@ on:
       - "tests/infra/test_helm_chart.py"
       - "docs/evidence/deployment_baseline_2026-10-05.json"
       - ".github/workflows/helm.yaml"
+      - "infra/kind/**"
+      - "scripts/create-repro-cluster.sh"
+      - "tests/infra/test_create_repro_cluster.py"
+      - "Makefile"
   pull_request:
     branches: [main]
     paths:
@@ -15,6 +19,10 @@ on:
       - "tests/infra/test_helm_chart.py"
       - "docs/evidence/deployment_baseline_2026-10-05.json"
       - ".github/workflows/helm.yaml"
+      - "infra/kind/**"
+      - "scripts/create-repro-cluster.sh"
+      - "tests/infra/test_create_repro_cluster.py"
+      - "Makefile"
 
 permissions:
   contents: read
@@ -36,3 +44,7 @@ jobs:
         run: helm lint helm --strict -f helm/environments/repro.yaml
       - name: Render image contract tests
         run: python -m unittest discover -s tests/infra -p test_helm_chart.py -v
+      - name: Check bootstrap shell syntax
+        run: bash -n scripts/create-repro-cluster.sh
+      - name: Test bootstrap isolation with fake CLIs
+        run: python -m unittest discover -s tests/infra -p test_create_repro_cluster.py -v

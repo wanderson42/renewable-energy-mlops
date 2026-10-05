@@ -1,7 +1,7 @@
 """Render the chart to protect image identity without contacting a cluster.
 
 Standalone execution needs only Python and Helm:
-python -m unittest discover -s tests/infra -p test_helm_chart.py -v
+python3 -m unittest discover -s tests/infra -p test_helm_chart.py -v
 """
 
 import json

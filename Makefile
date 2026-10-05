@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: ports stop-ports status validate
+.PHONY: ports stop-ports status validate repro-cluster
 PORT_LOG_DIR := .ports
 
 # ==============================================================================
@@ -57,6 +57,10 @@ ports: stop-ports
 	@echo "   - Dashboard UI:   $(DASHBOARD_URL)"
 	@echo "   - Logs de portas: $(PORT_LOG_DIR)/"
 
+
+# Cria somente o KinD de ensaio, usando kubeconfig separado.
+repro-cluster:
+	@bash scripts/create-repro-cluster.sh
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."

@@ -10,6 +10,7 @@ shap_importance.csv
 # Logs
 *.log
 .ports/
+.repro/
 
 # Python / Compilados
 __pycache__/

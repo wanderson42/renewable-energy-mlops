@@ -1,12 +1,13 @@
 {
   "recorded_on": "2026-10-05",
-  "source": "User-supplied read-only kubectl, helm and model-info outputs",
+  "source": "User-supplied read-only kubectl, helm, model-info, kind version and docker inspect outputs",
   "context": "kind-energy-mlops",
   "namespace": "default",
   "helm_release": "energy-mlops",
   "helm_revision": 16,
   "kubernetes_version": "v1.37.0",
-  "node_image": null,
+  "node_image": "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5",
+  "kind_version": "kind v0.34.0-alpha+aa74c7f3e55dba go1.26.7 linux/amd64",
   "workloads": {
     "energy-api": {
       "requested_image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
@@ -48,7 +49,7 @@
   "validation_limits": [
     "No clean-cluster deployment or image pulls executed by this collection",
     "No PostgreSQL or RustFS snapshot restored",
-    "Kind node image and exact smoke payload still pending",
+    "Exact smoke payload still pending",
     "Platform-specific image IDs require registry availability verification before provisioning"
   ]
 }
