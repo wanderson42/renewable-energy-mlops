@@ -144,6 +144,13 @@ completa.
 
 ## Fronteiras ainda não exercitadas
 
+O [recibo de validação](evidence/aws_blueprint_2026-10-05.json) registra o Actions
+da revisão `7e50b18`: formatação, init com lockfile, validate, **7 testes AWS com
+mocks**, TFLint e **20 controles Checkov selecionados** aprovados. O job local
+também passou. O ambiente de edição apresentou inconsistência de cache do
+provider e bloqueio de sockets de plugins; a comprovação final vem do runner
+Actions. Essa validação não utilizou conta AWS.
+
 Antes de qualquer possível uso cloud, seria necessário verificar as versões EKS,
 AMI/add-ons e PostgreSQL na região, políticas/quotas da conta, AZs, tamanhos e
 custos. Não se presume que a versão do KinD esteja disponível no EKS.

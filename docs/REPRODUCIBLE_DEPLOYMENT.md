@@ -1256,7 +1256,37 @@ nova de encerramento/reinício do launcher ou de disponibilidade contínua.
 O marco de configuração e inicialização está exercitado, com recuperação da
 página Prefect confirmada pelo operador. A narrativa detalhada está no [notebook da branch](../notebooks/operations/reproducible_deployment_v1_0.ipynb). A síntese curada foi incorporada ao
 [notebook principal](../notebooks/renewable-energy-mlops.ipynb), na seção P10.
-O blueprint AWS permanece pendente; a v1.0 não está encerrada.
+O blueprint AWS foi declarado e validado em CI/mocks na etapa abaixo; a revisão
+final da v1.0 continua em andamento.
+
+## 21. Blueprint AWS sem provisionamento — 05/10/2026
+
+O root [`terraform/environments/aws`](../terraform/environments/aws) declara VPC,
+EKS, S3, RDS e IAM. A arquitetura, os contratos de identidade e as integrações
+ainda necessárias estão em [AWS_BLUEPRINT.md](AWS_BLUEPRINT.md). Essa trilha é
+separada do apply local de ensaio.
+
+Na revisão `7e50b18`, o Actions aprovou fmt, init com lockfile, validate, sete
+testes AWS com mocks, TFLint e vinte controles Checkov selecionados. O job local
+também passou. O [recibo](evidence/aws_blueprint_2026-10-05.json) registra jobs,
+ferramentas e limites. Nenhum plano autenticado, apply ou recurso AWS foi criado.
+
+Depois de sincronizar a branch, a conferência no host é:
+
+```bash
+make aws-blueprint-check
+```
+
+Esse target não acessa o KinD nem provisiona cloud; pode baixar o provider no
+init, e usa mocks nos testes. Terraform permanece fora do ambiente Poetry.
+As fixtures incluem valores fictícios de conta/AZs/versões; não devem ser
+usadas como inputs de um deployment real.
+
+A síntese está no notebook principal, e as decisões detalhadas no
+[notebook da branch](../notebooks/operations/reproducible_deployment_v1_0.ipynb).
+Permissões IAM não implementam sozinhas service accounts, credenciais RDS/TLS ou
+migração das URIs do Registry. O escopo de portfólio distingue o deployment
+local exercitado do blueprint cloud validado em configuração.
 
 ## Referências do projeto
 

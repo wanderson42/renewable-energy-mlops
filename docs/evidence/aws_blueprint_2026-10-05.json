@@ -1,0 +1,57 @@
+{
+  "recorded_on": "2026-10-05",
+  "recorded_timezone": "America/Belem",
+  "validation_source": "GitHub Actions logs and completed job conclusions; no AWS account or cluster used",
+  "git_revision": "7e50b18004d0a8f9250d932ea2f1ab0c14f69914",
+  "terraform_version": "1.16.5",
+  "aws_provider_version": "6.67.0",
+  "tflint_version": "0.64.0",
+  "tflint_aws_ruleset_version": "0.49.0",
+  "checkov_version": "3.3.23",
+  "ci": {
+    "run_id": 37396115333,
+    "url": "https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37396115333",
+    "jobs": [
+      {
+        "id": 112052353629,
+        "name": "local",
+        "conclusion": "success"
+      },
+      {
+        "id": 112052353924,
+        "name": "aws-blueprint",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "checks": {
+    "terraform_fmt": "passed",
+    "terraform_init_lockfile_readonly": "passed",
+    "terraform_validate": "passed",
+    "aws_mock_tests": {
+      "passed": 7,
+      "failed": 0,
+      "command": "plan",
+      "provider": "mock_provider aws"
+    },
+    "tflint": "passed",
+    "checkov": {
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "explicit baseline checks selected in terraform.yaml; not a complete audit"
+    }
+  },
+  "last_security_check_log_at": "2026-10-06T00:51:48.6794785Z",
+  "aws_authenticated_plan_executed": false,
+  "aws_apply_executed": false,
+  "aws_resources_created": false,
+  "cloud_applications_installed": false,
+  "validation_limits": [
+    "Mocks validate configuration contracts, not AWS service behavior, quotas, regional versions, credentials, networking or provisionability.",
+    "No EKS, RDS, S3 or IAM resources were created. No AWS deployment or cloud E2E was performed.",
+    "IRSA service accounts, a cloud Helm profile, RDS secret delivery/rotation, CA/TLS and metadata URI migration remain deployment integration boundaries.",
+    "Editor environment had provider-cache checksum mismatch and denied plugin sockets; final schema/test/lint proof comes from the Actions runner.",
+    "The CI result is tied to the implementation revision above; subsequent documentation updates do not alter Terraform resources."
+  ]
+}
