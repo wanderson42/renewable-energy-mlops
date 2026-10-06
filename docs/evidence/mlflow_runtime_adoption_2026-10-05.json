@@ -1,0 +1,157 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "Operator-supplied make repro-mlflow-apply gates and subsequent no-change plan",
+  "git_revision": "e3515f1b91cc37a0ac93f2ea3e4ef288af46b1e4",
+  "apply_completed": true,
+  "serving_gate": {
+    "validated_at": "2026-10-05T23:07:01.774506+00:00",
+    "model": {
+      "model_name": "ensemble_lgb_xgb_rf_bahia",
+      "alias": "champion",
+      "version": 17,
+      "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+      "metrics": {
+        "oot_mae_mw": 787.1835861175788,
+        "oot_nmae_pct": 6.678801541769502,
+        "oot_mae_fc_pct": 6.678801541769504,
+        "oot_r2_score": 0.8613955426061799
+      }
+    },
+    "payload": {
+      "predictions": [
+        {
+          "date": "2026-10-04T10:00:00Z",
+          "wind_speed_100m": 9.0,
+          "wind_direction_100m": 150.0,
+          "temperature_2m": 25.0
+        },
+        {
+          "date": "2026-10-04T11:00:00Z",
+          "wind_speed_100m": 10.0,
+          "wind_direction_100m": 170.0,
+          "temperature_2m": 26.0
+        },
+        {
+          "date": "2026-10-04T12:00:00Z",
+          "wind_speed_100m": 12.5,
+          "wind_direction_100m": 180.0,
+          "temperature_2m": 27.0
+        }
+      ]
+    },
+    "source_predictions": [
+      {
+        "date": "2026-10-04T10:00:00Z",
+        "predicted_fc": 0.06623484449484646,
+        "predicted_mw": 780.6637476696087
+      },
+      {
+        "date": "2026-10-04T11:00:00Z",
+        "predicted_fc": 0.056608779451567344,
+        "predicted_mw": 667.2080572500081
+      },
+      {
+        "date": "2026-10-04T12:00:00Z",
+        "predicted_fc": 0.05344438716699102,
+        "predicted_mw": 629.9115804663062
+      }
+    ],
+    "destination_predictions": [
+      {
+        "date": "2026-10-04T10:00:00Z",
+        "predicted_fc": 0.06623484449484646,
+        "predicted_mw": 780.6637476696087
+      },
+      {
+        "date": "2026-10-04T11:00:00Z",
+        "predicted_fc": 0.056608779451567344,
+        "predicted_mw": 667.2080572500081
+      },
+      {
+        "date": "2026-10-04T12:00:00Z",
+        "predicted_fc": 0.05344438716699102,
+        "predicted_mw": 629.9115804663062
+      }
+    ],
+    "max_absolute_difference": {
+      "predicted_fc": 0.0,
+      "predicted_mw": 0.0
+    },
+    "absolute_tolerances": {
+      "predicted_fc": 1e-12,
+      "predicted_mw": 1e-09
+    },
+    "reference": "paired_synthetic_batch_v1",
+    "image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
+    "context": "kind-energy-mlops-repro",
+    "namespace": "energy-mlops-repro"
+  },
+  "mlflow_runtime_gate": {
+    "validated_at": "2026-10-05T23:07:06.212901+00:00",
+    "context": "kind-energy-mlops-repro",
+    "namespace": "energy-mlops-repro",
+    "image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f",
+    "pod_image_id": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f",
+    "runtime": {
+      "python": "3.11.15",
+      "packages": {
+        "mlflow": "3.16.1",
+        "boto3": "1.43.96",
+        "botocore": "1.43.96",
+        "psycopg2-binary": "2.9.13",
+        "s3transfer": "0.19.2",
+        "jmespath": "1.1.0",
+        "urllib3": "2.8.0",
+        "python-dateutil": "2.9.0.post0",
+        "six": "1.17.0"
+      },
+      "imports_passed": true,
+      "pip_check_passed": true
+    },
+    "registry_model": {
+      "name": "ensemble_lgb_xgb_rf_bahia",
+      "version": 17,
+      "run_id": "1d13a61244c54f06aa70f43a9993ea37",
+      "source": "models:/m-b5741525f9ce41c98d166288955e9f6b",
+      "download_uri": "s3://mlflow-artifacts/6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts"
+    },
+    "artifact": {
+      "bucket": "mlflow-artifacts",
+      "key": "6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts/MLmodel",
+      "bytes": 2015,
+      "sha256": "aa618a9ed0f5abc00af614b175cd44ef048a383dc4b4954fdb920c566632a662"
+    },
+    "pvc_identity_preserved": true,
+    "runtime_installation_at_startup": false,
+    "scope": "MLflow runtime, live Registry query and one MLmodel artifact read"
+  },
+  "post_apply_plan": {
+    "result": "No changes",
+    "added": 0,
+    "changed": 0,
+    "destroyed": 0,
+    "chart_version": "0.1.5",
+    "chart_hash": "da4df22381b6351b0cd954ce23f53b9d17369021213a979b67084e862d4a358e",
+    "helm_input_values_changed": false,
+    "api_enabled": true,
+    "api_digest": "sha256:95208ab282e24014a81f60d1e3eac01b8db36e40f05ae25e9f168264e4b7c188",
+    "mlflow_image": "ghcr.io/wanderson42/renewable-energy-mlops@sha256:233063b1cf82a2fb72426a2b09334ef31fb73b1db4bf7d1d5cfb8d4b4c0e657f",
+    "mlflow_install_runtime_packages": false,
+    "wait_timeout_seconds": 600
+  },
+  "ci_validation": {
+    "git_revision": "e3515f1b91cc37a0ac93f2ea3e4ef288af46b1e4",
+    "terraform_run_id": 37385858167,
+    "helm_run_id": 37385858263,
+    "conclusions": {
+      "terraform": "success",
+      "helm": "success"
+    }
+  },
+  "validation_limits": [
+    "The runtime gate reads live Registry identity and one 2015-byte MLmodel artifact; it does not re-verify all objects or every database row",
+    "Serving equivalence covers the paired synthetic three-hour batch; no new quality benchmark or historical smoke payload claim",
+    "This runtime/chart upgrade did not exercise rollback of the MLflow image",
+    "The operational source rollout remains manual; Prefect/dashboard reproduction and AWS blueprint remain pending"
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "implementation_revision": "7717884024bf3b6a4694eea47038cbca1bdd3602",
+  "validated_at": "2026-10-05T23:55:57.439609+00:00",
+  "evidence_source": "operator supplied corrected startup gate receipt",
+  "context": "kind-energy-mlops-repro",
+  "namespace": "energy-mlops-repro",
+  "python": "3.14.4",
+  "packages": {
+    "prefect": "3.8.6",
+    "streamlit": "1.64.0",
+    "mlflow": "3.16.1",
+    "boto3": "1.43.75",
+    "botocore": "1.43.75",
+    "s3fs": "2026.9.0"
+  },
+  "lock_versions_match": true,
+  "model": {
+    "name": "ensemble_lgb_xgb_rf_bahia",
+    "alias": "champion",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37"
+  },
+  "registry_run_verified": true,
+  "buckets_accessible": [
+    "energy-lake",
+    "mlflow-artifacts"
+  ],
+  "artifact": {
+    "key": "6/models/m-b5741525f9ce41c98d166288955e9f6b/artifacts/MLmodel",
+    "bytes": 2015,
+    "sha256": "aa618a9ed0f5abc00af614b175cd44ef048a383dc4b4954fdb920c566632a662"
+  },
+  "prefect_settings_isolated": true,
+  "prefect_api_health_passed": true,
+  "prefect_database_file_present": true,
+  "dashboard_health_http_status": 200,
+  "dashboard_browser_observation": "working in previous operator report; not re-observed in this gate receipt",
+  "prefect_browser_observation": "operator confirmed that the Prefect page error disappeared after the fix",
+  "prefect_ui_data_query_gate": "passed",
+  "fix_host_validation": "HTTP configuration and read-only data query passed; Prefect page recovery confirmed by operator",
+  "scope": "local services, effective app settings and read-only client integrations; no browser E2E claim",
+  "urls": {
+    "api": "http://127.0.0.1:18000",
+    "mlflow": "http://127.0.0.1:15000",
+    "rustfs": "http://127.0.0.1:19000",
+    "prefect": "http://127.0.0.1:14200",
+    "dashboard": "http://127.0.0.1:18501"
+  },
+  "prefect_ui": {
+    "api_url": "http://127.0.0.1:14200/api",
+    "auth": null,
+    "flow_runs_count": 0,
+    "data_query_http_status": 200,
+    "browser_e2e": "not exercised by this gate"
+  },
+  "dashboard_browser_e2e": "not exercised by this gate",
+  "operator_browser_confirmation": {
+    "reported_at": "2026-10-05T21:05:56-03:00",
+    "prefect_page_error_disappeared": true,
+    "scope": "manual operator report; no automated browser suite or flow execution evidenced"
+  }
+}

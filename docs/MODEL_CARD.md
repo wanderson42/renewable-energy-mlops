@@ -16,20 +16,20 @@ O projeto é educacional/de portfólio e não constitui um sistema certificado p
 
 ## 2. Identidade operacional
 
-Estado operacional validado em **2026-10-01**:
+Estado operacional validado em **2026-10-05**, preservado também no ensaio v1.0:
 
 | Campo | Valor |
 |---|---|
 | Registered Model operacional | `ensemble_lgb_xgb_rf_bahia` |
 | Alias | `@champion` |
-| Champion | v10 |
-| Run ID | `d466ccb7fa294851a86a73b05d4e5735` |
-| OOT MAE | 829.59 MW |
-| OOT nMAE | 7.04% |
-| OOT R² | 0.8477 |
+| Champion | v17 |
+| Run ID | `1d13a61244c54f06aa70f43a9993ea37` |
+| OOT MAE | 787.1836 MW |
+| OOT nMAE | 6.6788% |
+| OOT R² | 0.8614 |
 | Número de features | 9 |
 
-O último Challenger operacional anterior ao experimento v0.2.0 foi a **v12**:
+Na etapa histórica anterior ao experimento v0.2.0, o Challenger era a **v12**:
 
 | Métrica | Champion v10 | Challenger v12 |
 |---|---:|---:|
@@ -38,7 +38,11 @@ O último Challenger operacional anterior ao experimento v0.2.0 foi a **v12**:
 | OOT R² | 0.8477 | 0.8438 |
 | Features | 9 | 9 |
 
-A v12 foi rejeitada pelo Quality Gate e o alias `@champion` permaneceu na v10.
+A v12 foi rejeitada pelo Quality Gate e o alias `@champion` permaneceu na v10
+naquele momento. Depois, v10 e v17 foram reavaliadas no mesmo OOT de setembro/2026
+sob `same_oot_v1`: `803.3723 MW` e `787.1836 MW` de MAE, respectivamente. A v17
+foi promovida e o serving confirmou a nova identidade. Evidência de governança:
+[`operational_governance_v0_3_0.ipynb`](../notebooks/operations/operational_governance_v0_3_0.ipynb).
 
 ### Estado após os experimentos posteriores
 
@@ -47,6 +51,11 @@ Os experimentos de simplificação arquitetural e de comparação de janelas tem
 Os resultados experimentais foram produzidos sobre snapshots e protocolos temporais explicitamente congelados e são tratados como evidência para evolução do sistema.
 
 Eles não substituem automaticamente as métricas históricas do Champion nem implicam promoção sem passar pelo lifecycle operacional e pelo Quality Gate.
+
+Terraform, restauração e troca da imagem MLflow na v1.0 preservaram a v17.
+O lote sintético pareado de três horas reproduziu as previsões da origem com
+diferença máxima zero em FC e MW. Essa evidência valida a reprodução do serving;
+não mede generalização adicional nem representa novo treino/promoção.
 
 ---
 
@@ -431,10 +440,14 @@ Regras atuais:
 ```text
 Data Drift threshold        = 0.50
 Performance Drift threshold = +2.0 p.p. de nMAE
-CT trigger                  = Data Drift OR Performance Drift
+CT                          = pedido explícito + mês completo + truth integral + drift
 ```
 
-Na execução E2E validada, 7 de 9 features apresentaram drift (77.8%), acionando Continuous Training.
+Na execução E2E histórica da v0.1, 7 de 9 features apresentaram drift (77.8%),
+acionando Continuous Training sob o fluxo daquela etapa. Na v0.3, o padrão é
+observacional: CT só ocorre com pedido explícito, mês completo, truth integral
+e sinal de drift. A primeira janela real reuniu 96 horas meteorológicas e
+72 com truth; esse acompanhamento não comprova estabilidade longitudinal.
 
 Data Drift e Performance Drift são tratados como sinais distintos. Drift pode disparar retreinamento, mas não promove um modelo diretamente.
 
@@ -444,7 +457,8 @@ Data Drift e Performance Drift são tratados como sinais distintos. Drift pode d
 
 O Monitoring pode disparar treinamento, mas não promoção.
 
-A decisão Champion/Challenger considera atualmente:
+A decisão Champion/Challenger usa a política `same_oot_v1`, com ambos avaliados
+no mesmo OOT congelado e pela mesma implementação de métricas. Considera:
 
 - melhoria de MAE em MW; ou
 - simplificação por menor número de **features**, desde que a degradação de nMAE permaneça dentro da tolerância configurada.
@@ -483,15 +497,20 @@ O histórico canônico de capacidade começa em **2024-03-21**. Experimentos de 
 
 ## 14. Validação de software
 
-No fechamento da etapa de comparação de janelas e resiliência local:
+No fechamento da implementação operacional v0.3, em 05/10/2026:
 
 ```text
-tox -e py314: 129 passed
+tox -e py314: 154 passed
               0 failed
               2 warnings
 ```
 
 Os warnings conhecidos permanecem associados à compatibilidade interna Evidently/NumPy e não representam falhas da aplicação.
+
+Esse é o resultado histórico da v0.3. Os checks novos de infraestrutura v1.0
+estão documentados separadamente em
+[`REPRODUCIBLE_DEPLOYMENT.md`](REPRODUCIBLE_DEPLOYMENT.md); não se infere uma nova
+contagem global somando execuções de suítes diferentes.
 
 A suíte cobre, entre outros pontos:
 

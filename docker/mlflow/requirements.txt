@@ -1,0 +1,11 @@
+# Runtime collected from both MLflow servers on 2026-10-05.
+# Independent of the application Poetry environment (Python 3.14).
+mlflow==3.16.1
+boto3==1.43.96
+botocore==1.43.96
+psycopg2-binary==2.9.13
+s3transfer==0.19.2
+jmespath==1.1.0
+urllib3==2.8.0
+python-dateutil==2.9.0.post0
+six==1.17.0

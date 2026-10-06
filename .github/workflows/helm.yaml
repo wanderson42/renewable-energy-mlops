@@ -1,0 +1,102 @@
+name: Helm chart validation
+
+on:
+  push:
+    branches: [main, "infra/**"]
+    paths:
+      - "helm/**"
+      - "tests/infra/test_helm_chart.py"
+      - "docs/evidence/deployment_baseline_2026-10-05.json"
+      - ".github/workflows/helm.yaml"
+      - "infra/kind/**"
+      - "scripts/create-repro-cluster.sh"
+      - "tests/infra/test_create_repro_cluster.py"
+      - "scripts/inventory-repro-data.*"
+      - "tests/infra/test_repro_data_inventory.py"
+      - "scripts/backup-repro.sh"
+      - "scripts/snapshot-repro-objects.py"
+      - "tests/infra/test_repro_snapshot.py"
+      - "scripts/restore-repro.sh"
+      - "tests/infra/test_repro_restore.py"
+      - "scripts/repro-serving.py"
+      - "scripts/review-repro-plan.py"
+      - "scripts/plan-repro.sh"
+      - "tests/infra/test_repro_serving.py"
+      - "scripts/validate-mlflow-runtime.py"
+      - "tests/infra/test_mlflow_runtime_gate.py"
+      - "scripts/repro-client.py"
+      - "tests/infra/test_repro_client.py"
+      - "docs/evidence/mlflow_runtime_build_2026-10-05.json"
+      - "Makefile"
+  pull_request:
+    branches: [main]
+    paths:
+      - "helm/**"
+      - "tests/infra/test_helm_chart.py"
+      - "docs/evidence/deployment_baseline_2026-10-05.json"
+      - ".github/workflows/helm.yaml"
+      - "infra/kind/**"
+      - "scripts/create-repro-cluster.sh"
+      - "tests/infra/test_create_repro_cluster.py"
+      - "scripts/inventory-repro-data.*"
+      - "tests/infra/test_repro_data_inventory.py"
+      - "scripts/backup-repro.sh"
+      - "scripts/snapshot-repro-objects.py"
+      - "tests/infra/test_repro_snapshot.py"
+      - "scripts/restore-repro.sh"
+      - "tests/infra/test_repro_restore.py"
+      - "scripts/repro-serving.py"
+      - "scripts/review-repro-plan.py"
+      - "scripts/plan-repro.sh"
+      - "tests/infra/test_repro_serving.py"
+      - "scripts/validate-mlflow-runtime.py"
+      - "tests/infra/test_mlflow_runtime_gate.py"
+      - "scripts/repro-client.py"
+      - "tests/infra/test_repro_client.py"
+      - "docs/evidence/mlflow_runtime_build_2026-10-05.json"
+      - "Makefile"
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.19.0
+      - name: Lint default chart
+        run: helm lint helm --strict
+      - name: Lint reproduction profile
+        run: helm lint helm --strict -f helm/environments/repro.yaml
+      - name: Lint bootstrap profile
+        run: helm lint helm --strict -f helm/environments/repro.yaml -f helm/environments/repro-bootstrap.yaml
+      - name: Render image contract tests
+        run: python -m unittest discover -s tests/infra -p test_helm_chart.py -v
+      - name: Check bootstrap shell syntax
+        run: bash -n scripts/create-repro-cluster.sh
+      - name: Test bootstrap isolation with fake CLIs
+        run: python -m unittest discover -s tests/infra -p test_create_repro_cluster.py -v
+      - name: Check inventory shell syntax
+        run: bash -n scripts/inventory-repro-data.sh
+      - name: Test restore preflight with read-only clients
+        run: python -m unittest discover -s tests/infra -p test_repro_data_inventory.py -v
+      - name: Check backup shell syntax
+        run: bash -n scripts/backup-repro.sh
+      - name: Test snapshot integrity and backup isolation with fake clients
+        run: python -m unittest discover -s tests/infra -p test_repro_snapshot.py -v
+      - name: Check restore shell syntax
+        run: bash -n scripts/restore-repro.sh
+      - name: Test destination-only restore with fake clients
+        run: python -m unittest discover -s tests/infra -p test_repro_restore.py -v
+      - name: Test serving stage and paired HTTP gates with fake clients
+        run: python -m unittest discover -s tests/infra -p test_repro_serving.py -v
+      - name: Test packaged MLflow image and artifact guards without a cluster
+        run: python -m unittest discover -s tests/infra -p test_mlflow_runtime_gate.py -v
+      - name: Test client target isolation and owned process cleanup
+        run: python -m unittest discover -s tests/infra -p test_repro_client.py -v

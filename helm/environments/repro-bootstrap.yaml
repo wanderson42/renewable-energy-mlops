@@ -1,0 +1,4 @@
+# Complementa repro.yaml durante a preparação/restauração dos dados.
+# O serving só é habilitado depois que o Registry e os artefatos estão prontos.
+api:
+  enabled: false

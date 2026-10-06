@@ -2,6 +2,18 @@
 
 Este runbook descreve a operação local validada do projeto **Renewable Energy MLOps**.
 
+Os comandos `ports`, `status` e `validate` abaixo pertencem à origem operacional
+da v0.3. O ensaio v1.0 usa outro cluster, kubeconfig, namespace e portas, com
+provisionamento por Terraform/Helm. Seu procedimento completo está em
+[`REPRODUCIBLE_DEPLOYMENT.md`](REPRODUCIBLE_DEPLOYMENT.md).
+
+Para o cliente do ensaio já restaurado: `make repro-client`, em primeiro plano,
+e `make repro-client-check`, em outro terminal. Prefect usa `14200`, dashboard
+`18501`, API `18000`, MLflow `15000` e RustFS `19000`, sempre em loopback.
+`Ctrl+C` encerra os processos dessa execução. Não usar `make ports`/`stop-ports`
+enquanto o cliente de ensaio estiver ativo: esses targets históricos usam
+encerramento global por padrão de processo.
+
 ## 1. Pré-requisitos
 
 - Python 3.14
@@ -103,24 +115,15 @@ curl -s http://localhost:8000/model-info | python -m json.tool
 Execução manual:
 
 ```bash
-poetry run python -m energy_mlops.pipelines.monitoring_flow
+poetry run python -m energy_mlops.pipelines.monitoring_flow \
+  --current-path s3://energy-lake/gold/SEU_SNAPSHOT_CURRENT.parquet
 ```
 
-O fluxo:
-
-```text
-Gold Reference + Gold Current
-        ↓
-9 canonical features
-        ↓
-Evidently Data Drift
-        ↓
-Performance Drift contra @champion
-        ↓
-Data Drift OR Performance Drift ?
-        ├── não → encerra
-        └── sim → Continuous Training
-```
+Substitua o caminho pelo snapshot Gold real da janela. O fluxo resolve o modelo
+uma vez, avalia as nove features, data/performance drift e comparação com geração
+observada, preservando versão/Run e cobertura. Por padrão, apenas observa e
+persiste evidência. CT exige `--trigger-training`, mês completo, truth integral
+e algum sinal de drift; a promoção continua subordinada ao Quality Gate same-OOT.
 
 Thresholds atuais:
 
@@ -214,13 +217,16 @@ Suite isolada usada no CI/local:
 poetry run tox -r -e py314
 ```
 
-Validação consolidada em 2026-09-30:
+Validação histórica consolidada da v0.3 em 05/10/2026:
 
 ```text
-75 passed
+154 passed
 0 failed
 2 warnings
 ```
+
+Não representa uma nova execução da suíte global após os checks v1.0; a evidência
+de Helm/Terraform/scripts está no runbook de reprodução.
 
 Checks de estilo/whitespace:
 
@@ -240,6 +246,16 @@ make stop-ports
 ### RustFS retorna HTTP 403
 
 Na raiz sem autenticação, `403` confirma que o serviço respondeu. Isso é suficiente para o teste de reachability utilizado pelo Makefile; não significa autenticação bem-sucedida.
+
+### Prefect saudável no HTTP, mas UI falha
+
+No ensaio, a string vazia em `PREFECT_SERVER_API_AUTH_STRING` ativava autenticação
+na versão `3.8.6`, enquanto o health continuava acessível. O launcher corrigido
+deixa os campos de auth ausentes e exige `None` nos settings efetivos. O gate
+consulta `/ui-settings` e a contagem de runs sem Authorization; não usa somente
+`/api/health`. O operador confirmou a recuperação da página após a correção.
+Não resetar o SQLite para resolver esse erro de configuração. O Prefect do ensaio
+é local e vinculado ao loopback; esse acesso não define autenticação para cloud.
 
 ### API responde 503 em `/health`
 

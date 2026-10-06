@@ -1,0 +1,34 @@
+{
+  "recorded_on": "2026-10-05",
+  "source": "User-supplied make repro-cluster and read-only verification outputs",
+  "bootstrap_commit": "41f3112679540199f128a4fad4fd99985a80aeab",
+  "clusters_present": ["energy-mlops", "energy-mlops-repro"],
+  "operational_context_after_creation": "kind-energy-mlops",
+  "reproduction_context": "kind-energy-mlops-repro",
+  "kubeconfig_relative_path": ".repro/kubeconfig",
+  "node": {
+    "name": "energy-mlops-repro-control-plane",
+    "status": "Ready",
+    "kubernetes_version": "v1.37.0",
+    "container_runtime": "containerd://2.3.4"
+  },
+  "storage_class": {
+    "name": "standard",
+    "default": true,
+    "provisioner": "rancher.io/local-path",
+    "reclaim_policy": "Delete",
+    "volume_binding_mode": "WaitForFirstConsumer",
+    "allow_volume_expansion": false
+  },
+  "operational_model_after_creation": {
+    "model_name": "ensemble_lgb_xgb_rf_bahia",
+    "alias": "champion",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37"
+  },
+  "validation_limits": [
+    "No MLOps workloads installed in the reproduction cluster yet",
+    "No data or Registry restoration performed",
+    "No prediction smoke executed against the reproduction cluster"
+  ]
+}

@@ -1,0 +1,63 @@
+name: Terraform local and AWS blueprint validation
+
+on:
+  push:
+    branches: [main, "infra/**"]
+    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", "scripts/repro-serving.py", "scripts/review-repro-plan.py", "tests/infra/test_repro_serving.py", ".github/workflows/terraform.yaml"]
+  pull_request:
+    branches: [main]
+    paths: ["terraform/**", "helm/**", "scripts/*repro*.sh", "scripts/repro-serving.py", "scripts/review-repro-plan.py", "tests/infra/test_repro_serving.py", ".github/workflows/terraform.yaml"]
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: terraform/environments/local
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false -lockfile=readonly
+      - run: terraform validate
+      - name: Test bootstrap and serving stages with mocked Helm provider (no cluster)
+        run: terraform test
+      - name: Check local tooling shell syntax
+        run: bash -n ../../../scripts/install-repro-terraform.sh ../../../scripts/plan-repro.sh
+      - name: Test plan review and real provider-free Terraform input evaluation
+        run: python3 -m unittest discover -s ../../../tests/infra -p test_repro_serving.py -v
+
+  aws-blueprint:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: terraform/environments/aws
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false -lockfile=readonly
+      - run: terraform validate
+      - name: Test AWS blueprint contracts with mocks (no AWS credentials or resources)
+        run: terraform test
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6
+        with:
+          tflint_version: v0.64.0
+      - run: tflint --init
+      - run: tflint --format=compact
+      - name: Check explicit baseline security controls (not a full audit)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/iac-scan"
+          "$RUNNER_TEMP/iac-scan/bin/pip" install --disable-pip-version-check 'checkov==3.3.23'
+          "$RUNNER_TEMP/iac-scan/bin/checkov" --directory . --framework terraform \
+            --check CKV_AWS_16,CKV_AWS_17,CKV_AWS_19,CKV_AWS_20,CKV_AWS_21,CKV_AWS_37,CKV_AWS_38,CKV_AWS_53,CKV_AWS_54,CKV_AWS_55,CKV_AWS_56,CKV_AWS_57,CKV_AWS_79,CKV_AWS_130 \
+            --skip-download --compact

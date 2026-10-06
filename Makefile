@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 
-.PHONY: ports stop-ports status validate
+.PHONY: ports stop-ports status validate repro-cluster repro-tools repro-plan repro-inventory repro-backup repro-restore repro-serving-plan repro-serving-apply repro-validate repro-checkpoint repro-failure-plan repro-rollback repro-recovery-test repro-release-plan repro-mlflow-build repro-mlflow-apply repro-mlflow-validate
+.PHONY: repro-client repro-client-check
+export REPRO_API_DIGEST
 PORT_LOG_DIR := .ports
 
 # ==============================================================================
@@ -57,6 +59,73 @@ ports: stop-ports
 	@echo "   - Dashboard UI:   $(DASHBOARD_URL)"
 	@echo "   - Logs de portas: $(PORT_LOG_DIR)/"
 
+
+# Cria somente o KinD de ensaio, usando kubeconfig separado.
+repro-cluster:
+	@bash scripts/create-repro-cluster.sh
+
+repro-tools:
+	@bash scripts/install-repro-terraform.sh
+
+.PHONY: aws-blueprint-check
+# Static/schema validation and mocked tests only; no AWS plan/apply.
+aws-blueprint-check:
+	@.repro/bin/terraform -chdir=terraform/environments/aws fmt -check -recursive
+	@.repro/bin/terraform -chdir=terraform/environments/aws init -backend=false -input=false -lockfile=readonly
+	@.repro/bin/terraform -chdir=terraform/environments/aws validate
+	@.repro/bin/terraform -chdir=terraform/environments/aws test
+
+repro-plan:
+	@bash scripts/plan-repro.sh
+
+repro-inventory:
+	@bash scripts/inventory-repro-data.sh
+
+repro-backup:
+	@bash scripts/backup-repro.sh
+
+repro-restore:
+	@bash scripts/restore-repro.sh
+
+repro-serving-plan:
+	@python3 scripts/repro-serving.py plan
+
+repro-serving-apply:
+	@python3 scripts/repro-serving.py apply
+
+repro-validate:
+	@python3 scripts/repro-serving.py validate
+
+repro-checkpoint:
+	@python3 scripts/repro-serving.py checkpoint
+
+repro-failure-plan:
+	@python3 scripts/repro-serving.py failure-plan
+
+repro-rollback:
+	@python3 scripts/repro-serving.py rollback
+
+repro-recovery-test:
+	@python3 scripts/repro-serving.py recovery-test
+
+repro-release-plan:
+	@python3 scripts/repro-serving.py release-plan
+
+repro-mlflow-build:
+	@bash scripts/build-mlflow-runtime.sh
+
+repro-mlflow-apply:
+	@python3 scripts/repro-serving.py apply
+	@python3 scripts/validate-mlflow-runtime.py
+
+repro-mlflow-validate:
+	@python3 scripts/validate-mlflow-runtime.py
+
+repro-client:
+	@python3 scripts/repro-client.py start
+
+repro-client-check:
+	@python3 scripts/repro-client.py check
 
 stop-ports:
 	@echo "🛑 Encerrando serviços e redirecionamentos..."
