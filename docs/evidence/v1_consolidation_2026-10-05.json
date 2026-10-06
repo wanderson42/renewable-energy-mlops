@@ -1,0 +1,126 @@
+{
+  "recorded_on": "2026-10-05",
+  "recorded_timezone": "America/Belem",
+  "validation_source": "GitHub API merge metadata and completed Actions job logs; operator integration evidence referenced separately",
+  "implementation_pr": {
+    "number": 4,
+    "url": "https://github.com/wanderson42/renewable-energy-mlops/pull/4",
+    "merged_at": "2026-10-06T01:32:10Z",
+    "main_revision": "2b07c406bde02fd26560b1565bf10acd4da64eca"
+  },
+  "ci_workflows": [
+    {
+      "name": "CI/CD Pipeline - MLOps",
+      "run_id": 37399661242,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 112063773644,
+          "name": "Executar Testes (CI)",
+          "conclusion": "success"
+        },
+        {
+          "id": 112064690456,
+          "name": "Build and Push to GHCR (CD)",
+          "conclusion": "success"
+        }
+      ],
+      "url": "https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37399661242"
+    },
+    {
+      "name": "Helm chart validation",
+      "run_id": 37399661236,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 112063773582,
+          "name": "chart",
+          "conclusion": "success"
+        }
+      ],
+      "url": "https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37399661236"
+    },
+    {
+      "name": "Terraform local and AWS blueprint validation",
+      "run_id": 37399661239,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 112063773841,
+          "name": "local",
+          "conclusion": "success"
+        },
+        {
+          "id": 112063773652,
+          "name": "aws-blueprint",
+          "conclusion": "success"
+        }
+      ],
+      "url": "https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37399661239"
+    },
+    {
+      "name": "MLflow runtime image",
+      "run_id": 37399661252,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 112063773711,
+          "name": "image",
+          "conclusion": "success"
+        }
+      ],
+      "url": "https://github.com/wanderson42/renewable-energy-mlops/actions/runs/37399661252"
+    }
+  ],
+  "software_validation": {
+    "command": "poetry run tox -e py314",
+    "passed": 225,
+    "skipped": 1,
+    "failed": 0,
+    "warnings": 2,
+    "subtests_passed": 56,
+    "tox_environment": "py314",
+    "conclusion": "OK",
+    "skip": "Terraform CLI unavailable in the Python CI job; test_real_terraform_evaluates_cli_and_json_var_file_inputs passed in the separate Terraform local job",
+    "warnings_source": "Evidently legacy code referencing deprecated numpy.core"
+  },
+  "iac_validation": {
+    "local_mock_tests_passed": 6,
+    "aws_mock_tests_passed": 7,
+    "mock_tests_failed": 0,
+    "tflint": "passed",
+    "checkov": {
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "explicit baseline controls selected in terraform.yaml, not a complete audit"
+    }
+  },
+  "model": {
+    "name": "ensemble_lgb_xgb_rf_bahia",
+    "version": 17,
+    "run_id": "1d13a61244c54f06aa70f43a9993ea37"
+  },
+  "operator_evidence": [
+    "snapshot_restore_2026-10-05.json",
+    "serving_reproduction_2026-10-05.json",
+    "deployment_recovery_2026-10-05.json",
+    "mlflow_runtime_adoption_2026-10-05.json",
+    "client_gate_recovery_2026-10-05.json",
+    "aws_blueprint_2026-10-05.json"
+  ],
+  "scope": {
+    "portfolio_implementation": "completed and integrated into main",
+    "local_deployment": "exercised in an isolated KinD using the private snapshot",
+    "aws": "blueprint configuration and mocks; no authenticated plan, apply or cloud deployment",
+    "longitudinal_v0_3": "ongoing; no additional monitoring window produced by this consolidation",
+    "release_publication": "not evidenced by this receipt"
+  },
+  "limits": [
+    "CI build/publication does not deploy automatically to the operator KinD.",
+    "Historical v17 reproduction requires private PostgreSQL/S3 snapshot data absent from Git.",
+    "Manual UI observations do not demonstrate automated browser E2E or Prefect flows/workers executed.",
+    "Mocks and selected static security checks do not prove AWS provisionability or production readiness.",
+    "The test counts belong to the implementation merge revision above; historical v0.3 results are preserved separately."
+  ]
+}

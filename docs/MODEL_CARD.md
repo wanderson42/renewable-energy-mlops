@@ -507,10 +507,14 @@ tox -e py314: 154 passed
 
 Os warnings conhecidos permanecem associados à compatibilidade interna Evidently/NumPy e não representam falhas da aplicação.
 
-Esse é o resultado histórico da v0.3. Os checks novos de infraestrutura v1.0
-estão documentados separadamente em
-[`REPRODUCIBLE_DEPLOYMENT.md`](REPRODUCIBLE_DEPLOYMENT.md); não se infere uma nova
-contagem global somando execuções de suítes diferentes.
+Esse é o resultado histórico da v0.3. O CI da `main` após o merge da v1.0,
+revisão `2b07c40`, registrou **225 passed, 1 skipped, 2 warnings; 56 subtests
+passed**, com `py314: OK`. O teste ignorado exige Terraform e passou no job
+Terraform local separado. Essa execução valida software e infraestrutura
+isolável; não mede novamente a generalização do modelo. A v17/Run e suas
+métricas OOT foram preservadas. Jobs e limites estão no
+[recibo de consolidação](evidence/v1_consolidation_2026-10-05.json), e os
+procedimentos em [REPRODUCIBLE_DEPLOYMENT.md](REPRODUCIBLE_DEPLOYMENT.md).
 
 A suíte cobre, entre outros pontos:
 

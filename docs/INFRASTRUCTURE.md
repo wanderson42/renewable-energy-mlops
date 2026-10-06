@@ -31,32 +31,45 @@ loopback access is not a cloud access-control design.
 
 The original v0.3 cluster continues longitudinal monitoring independently. Its
 manual rollout and port-forward supervisors are distinct from the Terraform/Helm
-rehearsal procedure. AWS infrastructure remains a planned blueprint, with no cloud
-resources deployed. Commands, exact identities, evidence and limits are in
-[`REPRODUCIBLE_DEPLOYMENT.md`](REPRODUCIBLE_DEPLOYMENT.md).
+rehearsal procedure. AWS infrastructure is declared and validated through
+configuration, mocks and selected static controls, with no cloud resources
+deployed. Commands, exact identities, evidence and limits are in
+[`REPRODUCIBLE_DEPLOYMENT.md`](REPRODUCIBLE_DEPLOYMENT.md). The implementation was
+merged through PR #4 into `main` at `2b07c40`; its
+[consolidation receipt](evidence/v1_consolidation_2026-10-05.json) records the
+completed post-merge CI checks.
 
 ---
 
 ## 1. Architecture overview
 
-```text
-Local Python / Notebook / CLI
-        |
-        | localhost:5000
-        v
-MLflow Tracking Server
-        |
-        +--------------------------+
-        |                          |
-        | metadata                 | artifacts
-        v                          v
-PostgreSQL                    RustFS (S3-compatible)
-service: postgres:5432        service: rustfs:9000
-        |                          |
-        v                          v
-postgres-pvc                  rustfs-pvc
-/var/lib/postgresql/data      /data
+```mermaid
+flowchart TB
+    TF["Terraform: helm_release.mlops"] --> HELM["Helm: chart e valores por digest"]
+    HELM --> SERVICES
+    subgraph KIND["KinD de ensaio: energy-mlops-repro"]
+      subgraph SERVICES["Namespace e release: energy-mlops-repro"]
+        API["FastAPI: champion v17"] --> ML["MLflow: Tracking e Registry"]
+        API --> S3["RustFS: Gold e artefatos"]
+        ML --> PG["PostgreSQL: metadata"]
+        ML --> S3
+        PG --> PGV[("postgres-pvc")]
+        S3 --> S3V[("rustfs-pvc")]
+      end
+    end
+    subgraph HOST["Cliente Poetry no host: loopback"]
+      DASH["Streamlit: 18501"] -->|API: 18000| API
+      DASH -->|MLflow: 15000| ML
+      DASH -->|S3: 19000| S3
+      PF["Prefect: 14200; SQLite isolado"]
+    end
 ```
+
+The diagram shows the reproduced v1.0 target. Terraform owns the Helm release;
+Helm owns the Kubernetes objects. The versioned script creates KinD. The v0.3
+source uses another cluster and its existing port-forward supervisors. Prefect
+runs on the host with a separate SQLite database, not the MLflow PostgreSQL DB.
+Restore loads PostgreSQL and RustFS before the API is enabled.
 
 The MLflow server uses:
 

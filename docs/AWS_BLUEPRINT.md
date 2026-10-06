@@ -35,16 +35,44 @@ concreto.
 
 ```mermaid
 flowchart TB
-    ADMIN["Role administrativa"] --> EKS["EKS: API privada"]
-    subgraph VPC["VPC em duas AZs"]
-      EKS --> PODS["Workloads em sub-redes privadas"]
-      PODS --> RDS["RDS PostgreSQL Multi-AZ"]
-      PODS --> NAT["NAT por AZ: saída"]
-      PODS --> EP["Endpoint S3"]
+    ADMIN["Admin: conexão à VPC"] -->|Access Entry| EKS["EKS: endpoint privado"]
+    EKS --- WA
+    EKS --- WB
+    subgraph VPC["Blueprint VPC: duas AZs"]
+      subgraph PRIVATE["Duas sub-redes privadas de workloads"]
+        WA["Workloads: sub-rede A"]
+        WB["Workloads: sub-rede B"]
+      end
+      subgraph PUBLIC["Duas sub-redes públicas de saída"]
+        NA["NAT Gateway A"]
+        NB["NAT Gateway B"]
+      end
+      subgraph DBNET["Duas sub-redes isoladas de banco"]
+        DB["RDS PostgreSQL Multi-AZ"]
+      end
+      WA -->|rota de saída| NA
+      WB -->|rota de saída| NB
+      WA --> EP["Endpoint gateway S3"]
+      WB --> EP
+      WA -->|5432: SG EKS| DB
+      WB -->|5432: SG EKS| DB
+      NA --> IGW["Internet Gateway"]
+      NB --> IGW
     end
-    EP --> S3["S3: Gold e artefatos MLflow"]
-    PODS --> IAM["IRSA por service account"]
+    EP --> S3["Buckets S3: dados e artefatos"]
+    IGW --> OUT["Internet: pull de imagens e saída"]
 ```
+
+O desenho representa a configuração proposta. Setas mostram rotas/acessos
+permitidos; linhas sem seta relacionam o endpoint EKS às sub-redes. RDS usa o
+subnet group isolado nas duas AZs. Nodes e aplicações não foram provisionados;
+workloads aqui designam a camada de rede preparada para um eventual deployment.
+
+| Camada de rede | Quantidade | Contrato declarado |
+|---|---:|---|
+| Pública de saída | 2, uma por AZ | NAT com saída pelo Internet Gateway |
+| Privada de workloads | 2, uma por AZ | NAT da mesma AZ; endpoint gateway S3 |
+| Isolada de banco | 2, uma por AZ | Rota local à VPC; sem NAT ou Internet Gateway |
 
 O endpoint do Kubernetes é privado por padrão. A operação precisaria de uma
 conexão à VPC ou de um executor nela. Como opção explícita, uma lista IPv4
@@ -88,6 +116,25 @@ não é uma política completa de backup externo.
 | `energy-mlops/mlflow` | Leitura/escrita no bucket de artefatos e leitura do secret RDS |
 | `energy-mlops/energy-api` | Leitura dos buckets Gold/artefatos |
 | `energy-mlops/energy-pipelines` | Leitura/escrita nos buckets Gold/artefatos |
+
+```mermaid
+flowchart TB
+    OIDC["Provider OIDC do EKS: sub e aud"] --> ML["MLflow: artefatos leitura/escrita"]
+    OIDC --> API["API: S3 somente leitura"]
+    OIDC --> PIPE["Pipelines: S3 leitura/escrita"]
+    ML --> ART["Bucket de artefatos"]
+    ML -->|GetSecretValue| SEC["Secret gerenciado do RDS"]
+    API --> ART
+    API --> GOLD["Bucket de dados Gold"]
+    PIPE --> ART
+    PIPE --> GOLD
+    RDS["RDS PostgreSQL"] --- SEC
+```
+
+O diagrama representa trust policies e permissões IAM declaradas. A associação
+dessas roles às service accounts e o uso das credenciais pelas aplicações
+pertencem ao contrato de integração cloud ainda não exercitado. A role dos nodes
+e a role do CNI estão separadas das três roles de aplicação.
 
 As trust policies IRSA vinculam audience `sts.amazonaws.com`, namespace e nome
 exato da service account. O namespace é configurável; os nomes das contas saem
@@ -174,9 +221,25 @@ de migração de metadata e validação dos artefatos. Copiar objetos sozinho n�
 resolve o vínculo Registry–storage.
 
 Não há deployment AWS, restauração na AWS, autenticação HTTP cloud, ingress/TLS
-de aplicação ou teste E2E cloud nesta entrega. O encerramento da v1.0 como projeto
-de portfólio deve registrar explicitamente o que foi executado localmente e o
-que foi apenas desenhado/validado como blueprint.
+de aplicação ou teste E2E cloud nesta entrega. A implementação da v1.0 foi
+integrada à `main` pelo PR #4, revisão `2b07c40`.
+O escopo de portfólio está concluído com deployment local exercitado e blueprint
+cloud declarado/validado. O [recibo de consolidação](evidence/v1_consolidation_2026-10-05.json)
+registra os workflows após o merge; as [notas da v1.0](RELEASE_v1_0_0.md)
+conservam as fronteiras dessa entrega.
+
+## Desenho de arquitetura e grafo Terraform
+
+Os diagramas acima documentam topologia e permissões. O HCL permanece a fonte
+de verdade: `network.tf` descreve rede/rotas, `eks.tf` cluster/nodes/add-ons,
+`storage.tf` buckets, `database.tf` RDS e `iam.tf` roles/trust policies. Mudanças
+nesses contratos exigem revisão do desenho correspondente.
+
+O comando [`terraform graph`](https://developer.hashicorp.com/terraform/cli/commands/graph)
+produz um grafo em DOT; por padrão, mostra a ordem de dependências dos recursos e
+data sources. Esse grafo ajuda a inspecionar dependências do código e pode ser
+renderizado com Graphviz. Ele complementa os diagramas de arquitetura e não
+representa uma verificação de deployment ou disponibilidade dos recursos.
 
 ## Referências primárias
 
