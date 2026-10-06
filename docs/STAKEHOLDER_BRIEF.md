@@ -68,7 +68,7 @@ A arquitetura AWS está descrita como código e testada com mocks, enquanto a ex
 
 O monitoramento é observacional por padrão. O retreinamento segue critérios explícitos: solicitação, mês completo, geração observada integral e sinal de mudança nos dados ou no desempenho. A promoção de um candidato passa pela comparação com o modelo atual no mesmo período temporal e pelos critérios de qualidade definidos, preservando o controle sobre mudanças.
 
-Wanderson Ferreira conduz a operação do portfólio e registra decisões. Para adoção organizacional, propõe-se distribuir responsabilidades por dados, modelo, infraestrutura e aprovação do uso de negócio, ampliando a governança já praticada no projeto.
+Para adoção organizacional, propõe-se distribuir responsabilidades por dados, modelo, infraestrutura e aprovação do uso de negócio, ampliando a governança já praticada no projeto.
 
 ### 8. Próximas decisões e evidências necessárias
 
@@ -128,5 +128,3 @@ A complementaridade abre uma frente de evolução: integrar previsão eólica e 
 - [[8] Gomes (UFSC, 2021) — Complementaridade eólica–fotovoltaica no Nordeste](https://repositorio.ufsc.br/handle/123456789/228475)
 - [[9] Costa e Silva (CBENS, 2024) — Complementaridade na Bahia](https://doi.org/10.59627/cbens.2024.2490)
 - [[10] Almeida e Toni (NERA, 2026) — Expansão eólica e híbrida na Bahia](https://doi.org/10.1590/1806-675520262911389)
-
-Referências em ordem de primeira citação • Consultadas em 06/10/2026.
