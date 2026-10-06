@@ -67,6 +67,14 @@ repro-cluster:
 repro-tools:
 	@bash scripts/install-repro-terraform.sh
 
+.PHONY: aws-blueprint-check
+# Static/schema validation and mocked tests only; no AWS plan/apply.
+aws-blueprint-check:
+	@.repro/bin/terraform -chdir=terraform/environments/aws fmt -check -recursive
+	@.repro/bin/terraform -chdir=terraform/environments/aws init -backend=false -input=false -lockfile=readonly
+	@.repro/bin/terraform -chdir=terraform/environments/aws validate
+	@.repro/bin/terraform -chdir=terraform/environments/aws test
+
 repro-plan:
 	@bash scripts/plan-repro.sh
 

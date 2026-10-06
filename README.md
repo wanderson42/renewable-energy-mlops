@@ -75,7 +75,7 @@ Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nov
 | Validação consolidada da v0.3 | **154 passed / 0 failed; resultado histórico de 05/10/2026** |
 | Deployment de ensaio | **KinD separado, Terraform/Helm, restore, serving pareado e recuperação declarativa** |
 | Cliente de ensaio | **Gate SDK/HTTP aprovado; dashboard e recuperação da UI Prefect confirmados pelo operador** |
-| v1.0 | **Em andamento; blueprint AWS pendente, sem deployment cloud** |
+| v1.0 | **Em andamento; blueprint Terraform AWS em revisão, sem deployment cloud** |
 | Warnings conhecidos | **2 — Evidently/NumPy, não bloqueantes** |
 
 Na etapa histórica anterior, o Challenger v12 apresentou `837.85 MW` de MAE OOT,
@@ -449,7 +449,11 @@ em portas e estado próprios, usando o ambiente Poetry. O primeiro startup confi
 SDKs, modelo e artefato; o operador informou que o dashboard funcionou. Após corrigir
 a autenticação vazia do Prefect, os settings HTTP da UI e a consulta ao banco
 passaram no host; o operador confirmou que o erro da interface desapareceu.
-O blueprint AWS segue em andamento. O escopo, as evidências
+O blueprint AWS está em [`terraform/environments/aws`](terraform/environments/aws),
+com rede, EKS, S3, RDS e IAM. `make aws-blueprint-check` valida a configuração e
+executa testes com mocks, sem credenciais ou provisionamento AWS. A arquitetura,
+as fronteiras de autenticação e as integrações ainda necessárias estão em
+[`docs/AWS_BLUEPRINT.md`](docs/AWS_BLUEPRINT.md). O escopo e as evidências locais
 e os critérios de aceitação estão em
 [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
@@ -562,6 +566,7 @@ Documentos adicionais:
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — arquitetura local, persistência, configuração e resiliência.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
 - [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md) — Terraform/Helm, restore, digests, recuperação e cliente isolado.
+- [`docs/AWS_BLUEPRINT.md`](docs/AWS_BLUEPRINT.md) — arquitetura Terraform AWS, validação com mocks e fronteiras ainda não exercitadas na nuvem.
 - [`notebooks/operations/reproducible_deployment_v1_0.ipynb`](notebooks/operations/reproducible_deployment_v1_0.ipynb) — decisões, procedimentos e evidências da branch de deployment reproduzível; síntese no notebook principal.
 - [`notebooks/operations/operational_governance_v0_3_0.ipynb`](notebooks/operations/operational_governance_v0_3_0.ipynb) — governança same-OOT e protocolo longitudinal da v0.3.
 - [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble.
@@ -593,7 +598,7 @@ Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MA
 - evoluir o Registered Model para uma identidade orientada ao produto, independente da arquitetura;
 - remover a compatibilidade de métricas `*_YYYY` quando nenhum modelo operacional relevante depender mais do contrato histórico;
 - ampliar o ensaio de backup/restore já validado entre dois clusters KinD para outros cenários de recuperação, conforme necessário;
-- criar blueprint IaC com Terraform para AWS, mantendo KinD + Helm como ambiente local reproduzível e a fase Cloud/IaC separada da evolução do modelo.
+- revisar e consolidar o blueprint Terraform AWS e seu contrato de integração, mantendo KinD + Helm como ambiente local reproduzível e a fase Cloud/IaC separada da evolução do modelo.
 
 ## Licença
 
