@@ -19,8 +19,12 @@ passou: digest validado, v17/Run, inferência e UIDs dos PVCs preservados, com
 plano final `No changes`. A imagem própria do runtime MLflow foi construída,
 testada sem rede externa, publicada no GHCR e adotada no KinD de ensaio.
 Runtime, Registry, leitura/hash de `MLmodel`, PVCs e serving passaram, com
-plano final `No changes`. A configuração dos processos locais e o blueprint
-AWS continuam pendentes.
+plano final `No changes`. O cliente isolado passou pelos gates SDK/HTTP;
+o operador confirmou o funcionamento do dashboard e a recuperação da UI
+Prefect. O blueprint AWS passou por validação de configuração, testes com
+mocks e análise estática em CI, com sete testes também aprovados no host.
+Não houve provisionamento AWS. A revisão final e a entrega por PR estão
+em andamento.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -1259,7 +1263,7 @@ página Prefect confirmada pelo operador. A narrativa detalhada está no [notebo
 O blueprint AWS foi declarado e validado em CI/mocks na etapa abaixo; a revisão
 final da v1.0 continua em andamento.
 
-## 21. Blueprint AWS sem provisionamento — 05/10/2026
+## 22. Blueprint AWS sem provisionamento — 05/10/2026
 
 O root [`terraform/environments/aws`](../terraform/environments/aws) declara VPC,
 EKS, S3, RDS e IAM. A arquitetura, os contratos de identidade e as integrações
@@ -1270,6 +1274,11 @@ Na revisão `7e50b18`, o Actions aprovou fmt, init com lockfile, validate, sete
 testes AWS com mocks, TFLint e vinte controles Checkov selecionados. O job local
 também passou. O [recibo](evidence/aws_blueprint_2026-10-05.json) registra jobs,
 ferramentas e limites. Nenhum plano autenticado, apply ou recurso AWS foi criado.
+
+O operador confirmou essa conferência no host após sincronizar `b716996`:
+configuração válida, provider AWS `6.67.0` assinado pela HashiCorp e sete
+testes aprovados, sem falhas. O recibo registra o resultado do host separado
+da validação CI; o horário de execução do comando não foi capturado.
 
 Depois de sincronizar a branch, a conferência no host é:
 

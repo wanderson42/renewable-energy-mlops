@@ -151,6 +151,12 @@ também passou. O ambiente de edição apresentou inconsistência de cache do
 provider e bloqueio de sockets de plugins; a comprovação final vem do runner
 Actions. Essa validação não utilizou conta AWS.
 
+Após sincronizar a revisão `b716996`, o operador executou
+`make aws-blueprint-check` no host e confirmou configuração válida e
+**7 testes com mocks aprovados, 0 falhas**, com o provider AWS `6.67.0`
+assinado pela HashiCorp. O mesmo recibo conserva esse relato separado da
+execução CI. TFLint e Checkov não fazem parte desse target local.
+
 Antes de qualquer possível uso cloud, seria necessário verificar as versões EKS,
 AMI/add-ons e PostgreSQL na região, políticas/quotas da conta, AZs, tamanhos e
 custos. Não se presume que a versão do KinD esteja disponível no EKS.

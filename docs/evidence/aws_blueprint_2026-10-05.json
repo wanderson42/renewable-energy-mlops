@@ -53,5 +53,26 @@
     "IRSA service accounts, a cloud Helm profile, RDS secret delivery/rotation, CA/TLS and metadata URI migration remain deployment integration boundaries.",
     "Editor environment had provider-cache checksum mismatch and denied plugin sockets; final schema/test/lint proof comes from the Actions runner.",
     "The CI result is tied to the implementation revision above; subsequent documentation updates do not alter Terraform resources."
-  ]
+  ],
+  "host_validation": {
+    "source": "Operator supplied terminal output in this conversation; execution timestamp not captured",
+    "git_revision": "b716996a56b188147b3d9600ecb6c6eaf52af4bf",
+    "command": "make aws-blueprint-check",
+    "provider_installation": "hashicorp/aws 6.67.0, signed by HashiCorp",
+    "configuration_valid": true,
+    "aws_mock_tests": {
+      "passed": 7,
+      "failed": 0,
+      "runs": [
+        "private_network_and_database",
+        "private_eks_and_explicit_identity",
+        "storage_and_workload_permissions",
+        "restricted_public_api_opt_in",
+        "unrestricted_api_rejected",
+        "duplicate_zones_rejected",
+        "wrong_account_admin_rejected"
+      ]
+    },
+    "scope": "fmt/init/validate and plan-only mock tests; TFLint and Checkov are evidenced by CI above; no authenticated AWS plan or apply"
+  }
 }
