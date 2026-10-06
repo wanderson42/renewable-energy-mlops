@@ -6,7 +6,7 @@ mock_provider "aws" {
     defaults = {
       arn        = "arn:aws:eks:us-east-1:123456789012:cluster/energy-mlops-portfolio"
       identity   = [{ oidc = [{ issuer = "https://oidc.eks.us-east-1.amazonaws.com/id/TESTONLY" }] }]
-      vpc_config = [{ cluster_security_group_id = "sg-0123456789abcdef0" }]
+      vpc_config = { cluster_security_group_id = "sg-0123456789abcdef0" }
     }
   }
   mock_resource "aws_iam_openid_connect_provider" {
@@ -74,7 +74,7 @@ run "private_eks_and_explicit_identity" {
     error_message = "Cluster access must be private by default, with explicit admin identity."
   }
   assert {
-    condition     = aws_launch_template.nodes.metadata_options[0].http_tokens == "required" && aws_launch_template.nodes.metadata_options[0].http_put_response_hop_limit == 1 && aws_launch_template.nodes.block_device_mappings[0].ebs[0].encrypted
+    condition     = aws_launch_template.nodes.metadata_options[0].http_tokens == "required" && aws_launch_template.nodes.metadata_options[0].http_put_response_hop_limit == 1 && one(aws_launch_template.nodes.block_device_mappings).ebs[0].encrypted
     error_message = "Worker nodes must use IMDSv2 and encrypted disks."
   }
   assert {
