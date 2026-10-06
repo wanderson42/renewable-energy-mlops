@@ -4,7 +4,7 @@
 [![CI](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml/badge.svg)](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Poetry](https://img.shields.io/badge/Poetry-2.x-60A5FA?logo=poetry&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-129%20passed-brightgreen)
+![Validation v0.3](https://img.shields.io/badge/v0.3-154%20tests%20passed-brightgreen)
 [![License](https://img.shields.io/github/license/wanderson42/renewable-energy-mlops)](LICENSE)
 
 Sistema MLOps end-to-end para **previsão horária Day-Ahead de geração eólica na Bahia**, cobrindo ingestão de dados, contratos de features, validação temporal, otimização de hiperparâmetros, experiment tracking, Model Registry, explicabilidade, monitoramento de drift, Continuous Training, model serving e operação local em Kubernetes.
@@ -27,7 +27,7 @@ flowchart TD
     GOLD --> MON[Monitoring Flow\nEvidently + Performance Drift]
     GOLD --> TRAIN[Training Flow]
 
-    MON -->|Data Drift OR Performance Drift| TRAIN
+    MON -->|CT explícito + mês completo + truth integral + drift| TRAIN
     TRAIN --> OPT{Optimizer configurado?}
     OPT -->|sim| OP[Optuna + TimeSeriesSplit]
     OPT -->|não| TR[ModelTrainer]
@@ -43,36 +43,46 @@ flowchart TD
     XAI --> DASH
 
     GHA[GitHub Actions] --> GHCR[GHCR]
-    GHCR -. manual rollout .-> API
+    GHCR -. rollout manual na origem .-> API
+    GHCR -->|digest fixado no ensaio| DEPLOY[Terraform + Helm]
+    DEPLOY --> API
 ```
 
 ### Dois lifecycles distintos
 
 O projeto separa explicitamente:
 
-- **Software lifecycle:** `push → GitHub Actions → tox → Docker build → GHCR → rollout Kubernetes manual`.
-- **Model lifecycle:** `Monitoring → CT → Challenger → Quality Gate → @champion → hot reload`.
+- **Software lifecycle:** build/testes/publicação por Actions; deployment local do ensaio por plano/apply Terraform, Helm, rollout e gates. A origem da v0.3 mantém seu rollout manual.
+- **Model lifecycle:** monitoring observacional; CT exige solicitação explícita, mês completo, truth integral e drift. Challenger passa pelo Quality Gate same-OOT antes de `@champion` e hot reload.
 
 Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nova imagem da API não implica retreinar o modelo.
 
-## Estado atual — 2026-10-02
+## Estado atual — 2026-10-05
 
 | Item | Estado |
 |---|---|
 | Modelo registrado | `ensemble_lgb_xgb_rf_bahia` |
 | Alias operacional | `@champion` |
-| Champion | **v10** |
-| OOT MAE | **829.59 MW** |
-| OOT nMAE | **7.04%** |
-| OOT R² | **0.8477** |
+| Champion | **v17** |
+| Run ID | `1d13a61244c54f06aa70f43a9993ea37` |
+| OOT MAE | **787.1836 MW** |
+| OOT nMAE | **6.6788%** |
+| OOT R² | **0.8614** |
 | Features do modelo | **9** |
-| Último Challenger | **v12 — rejeitado pelo Quality Gate** |
-| Data Drift observado | **7/9 features (77.8%)** |
+| Governança | **`same_oot_v1`; v17 promovida após comparação com v10 no mesmo OOT** |
+| Primeira janela de monitoring v0.3 | **96 horas meteorológicas; 72 com truth** |
 | Threshold de Data Drift | **50%** |
-| Testes automatizados | **129 passed / 0 failed** |
+| Validação consolidada da v0.3 | **154 passed / 0 failed; resultado histórico de 05/10/2026** |
+| Deployment de ensaio | **KinD separado, Terraform/Helm, restore, serving pareado e recuperação declarativa** |
+| Cliente de ensaio | **Gate SDK/HTTP aprovado; dashboard e recuperação da UI Prefect confirmados pelo operador** |
+| v1.0 | **Em andamento; blueprint AWS pendente, sem deployment cloud** |
 | Warnings conhecidos | **2 — Evidently/NumPy, não bloqueantes** |
 
-O Challenger v12 apresentou `837.85 MW` de MAE OOT, `7.11%` de nMAE e `R² = 0.8438`. Como não melhorou o MAE e não reduziu o número de features, o alias `@champion` permaneceu na v10.
+Na etapa histórica anterior, o Challenger v12 apresentou `837.85 MW` de MAE OOT,
+`7.11%` de nMAE e `R² = 0.8438`, sendo rejeitado. Posteriormente, a v17 foi
+promovida por um gate independente: v10 e v17 foram reavaliadas no mesmo OOT
+de setembro/2026. A v10 obteve `803.3723 MW`, e a v17, `787.1836 MW`.
+Esses resultados não substituem retroativamente as métricas dos benchmarks.
 
 ### Experimento de simplificação — v0.2.0
 
@@ -86,7 +96,9 @@ O experimento v0.2.0 avaliou três arquiteturas sobre **o mesmo snapshot tempora
 
 A hipótese original de remover o XGBoost não foi sustentada no novo snapshot. `LGBM + XGB` foi o melhor candidato reduzido, mas o ensemble completo manteve os melhores valores pontuais no OOT.
 
-O benchmark é tratado como **evidência experimental** e não promoveu automaticamente nenhum modelo. O Champion operacional permanece na v10, pois suas métricas históricas pertencem a outro período OOT e não são comparadas diretamente com o benchmark v0.2.0 para fins de promoção.
+O benchmark é tratado como **evidência experimental** e não promoveu automaticamente
+nenhum modelo. A v10 permaneceu champion naquele momento; a promoção posterior
+da v17 exigiu o Quality Gate same-OOT da v0.3.
 
 
 ### Experimento de janela temporal de treinamento
@@ -121,7 +133,7 @@ Expanding Window. A política passou a ser parametrizável por `training_window_
 para permitir repetição do benchmark em novos períodos OOT.
 
 A evidência detalhada está em
-[`notebooks/experiments/training_window_comparison_benchmark.ipynb`](notebooks/experiments/training_window_comparison_benchmark.ipynb).
+[`notebooks/experiments/training_window_comparison_v0_2_0.ipynb`](notebooks/experiments/training_window_comparison_v0_2_0.ipynb).
 
 
 ## Dashboard operacional
@@ -136,7 +148,10 @@ A interface consome previsão meteorológica real da Open-Meteo para **Morro do 
 
 ![Dashboard de Monitoring](notebooks/streamlit_monitoring.png)
 
-O relatório do Evidently monitora apenas as features pertencentes ao contrato do modelo. Data Drift e Performance Drift são avaliados separadamente; qualquer um deles pode disparar Continuous Training, mas **drift nunca promove um modelo diretamente**.
+O relatório do Evidently monitora apenas as features pertencentes ao contrato do
+modelo. Data Drift e Performance Drift são avaliados separadamente. Monitoring
+é observacional por padrão; CT exige solicitação explícita, mês completo, truth
+integral e algum sinal de drift. A promoção depende do Quality Gate same-OOT.
 
 ## Proveniência dos dados
 
@@ -215,7 +230,10 @@ trainer recebe None / None
 
 Cada `ModelTrainer` decide se otimização é obrigatória. O Stacking atual exige `best_params` e `optimization_run_id`; `train_examples.py` demonstra um Ridge compatível com execução sem optimizer.
 
-A promoção de Challenger para Champion só ocorre após o **Quality Gate**. Na execução E2E validada, o Monitoring detectou drift, o CT treinou a v12 e o gate decidiu manter a v10. Não promover também é um resultado esperado de governança.
+A promoção de Challenger para Champion só ocorre após o **Quality Gate**. Na
+execução E2E histórica da v0.1, o Monitoring detectou drift, o CT treinou a v12
+e o gate decidiu manter a v10. Na v0.3, o gate same-OOT promoveu a v17;
+não promover também continua sendo um resultado esperado de governança.
 
 A regra atual de parcimônia considera **redução do número de features**, não redução do número de estimadores base. Por isso, ela não foi usada para decidir automaticamente entre as arquiteturas do experimento v0.2.0, que compartilham o mesmo contrato de 9 features.
 
@@ -430,7 +448,7 @@ leitura/hash de artefato aprovados. `make repro-client` prepara Prefect e dashbo
 em portas e estado próprios, usando o ambiente Poetry. O primeiro startup confirmou
 SDKs, modelo e artefato; o operador informou que o dashboard funcionou. Após corrigir
 a autenticação vazia do Prefect, os settings HTTP da UI e a consulta ao banco
-passaram no host; a navegação no Prefect ainda aguarda confirmação.
+passaram no host; o operador confirmou que o erro da interface desapareceu.
 O blueprint AWS segue em andamento. O escopo, as evidências
 e os critérios de aceitação estão em
 [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
@@ -451,7 +469,8 @@ POST /reload-model
 Execução manual do fluxo:
 
 ```bash
-poetry run python -m energy_mlops.pipelines.monitoring_flow
+poetry run python -m energy_mlops.pipelines.monitoring_flow \
+  --current-path s3://energy-lake/gold/SEU_SNAPSHOT_CURRENT.parquet
 ```
 
 Regras atuais:
@@ -459,7 +478,7 @@ Regras atuais:
 ```text
 Data Drift threshold        = 50% das features
 Performance Drift threshold = +2.0 p.p. de nMAE
-Trigger de CT               = Data Drift OR Performance Drift
+CT                         = pedido explícito + mês completo + truth integral + drift
 ```
 
 O relatório HTML do Evidently é persistido antes da avaliação de Performance Drift para preservar evidência intermediária mesmo se uma etapa posterior falhar.
@@ -472,16 +491,20 @@ Validação consolidada:
 poetry run tox -r -e py314
 ```
 
-Resultado validado:
+Resultado histórico consolidado da v0.3 em 05/10/2026:
 
 ```text
-129 passed
+154 passed
 0 failed
 2 warnings
 py314: OK
 ```
 
 Os warnings conhecidos são provenientes de compatibilidade interna Evidently/NumPy e não representam falhas da aplicação.
+
+Esse resultado não é uma contagem atual de toda a branch v1.0. Os checks adicionais
+de Helm, Terraform e scripts operacionais têm evidências próprias no
+[runbook de reprodução](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
 Checks adicionais:
 
@@ -496,14 +519,18 @@ O projeto **não declara percentual de cobertura**, pois coverage não foi medid
 
 O workflow em [`.github/workflows/ci_cd.yaml`](.github/workflows/ci_cd.yaml) executa a suíte de testes antes do build da imagem. Após sucesso, a imagem da FastAPI é publicada no **GitHub Container Registry (GHCR)**.
 
-O deployment Kubernetes local é deliberadamente explícito e permanece manual, por exemplo:
+Na origem operacional da v0.3, o rollout continua explícito e manual, por exemplo:
 
 ```bash
 kubectl rollout restart deployment/energy-api
 kubectl rollout status deployment/energy-api
 ```
 
-Portanto, o projeto possui **CI + entrega de imagem automatizada**, mas não se apresenta como GitOps completo.
+No ensaio v1.0, o operador gera/revisa um plano Terraform e aplica a release Helm;
+o procedimento aguarda rollout e verifica identidade, inferência e persistência.
+As imagens são fixadas por digest. O CI não acessa automaticamente o KinD do host,
+e a arquitetura não é apresentada como GitOps completo. O procedimento está em
+[`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
 ## Reprodutibilidade e segurança
 
@@ -518,6 +545,10 @@ Portanto, o projeto possui **CI + entrega de imagem automatizada**, mas não se 
 - PostgreSQL e RustFS usam PVCs separados para metadata e artifacts do MLflow.
 - Persistência foi validada após restart de pods/deployments e do control-plane KinD.
 - Os port-forwards críticos `5000` e `9000` possuem retry automático no ambiente local.
+- O launcher do ensaio usa loopback, portas próprias e perfil/SQLite Prefect separado;
+  Prefect local sem Basic Auth não representa uma política de acesso para cloud.
+- As credenciais RustFS continuam necessárias para os acessos S3; secrets, state,
+  planos, kubeconfig e snapshots de `.repro/` ficam fora do Git.
 
 ## Documentação técnica
 
@@ -530,8 +561,10 @@ Documentos adicionais:
 - [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) — objetivo, contrato, métricas, limitações e governança do modelo.
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — arquitetura local, persistência, configuração e resiliência.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
+- [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md) — Terraform/Helm, restore, digests, recuperação e cliente isolado.
+- [`notebooks/operations/operational_governance_v0_3_0.ipynb`](notebooks/operations/operational_governance_v0_3_0.ipynb) — governança same-OOT e protocolo longitudinal da v0.3.
 - [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble.
-- [`notebooks/experiments/training_window_comparison_benchmark.ipynb`](notebooks/experiments/training_window_comparison_benchmark.ipynb) — benchmark Expanding × Rolling 24m × Rolling 12m.
+- [`notebooks/experiments/training_window_comparison_v0_2_0.ipynb`](notebooks/experiments/training_window_comparison_v0_2_0.ipynb) — benchmark Expanding × Rolling 24m × Rolling 12m.
 
 ## Packaging scope
 

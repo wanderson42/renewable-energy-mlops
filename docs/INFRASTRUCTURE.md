@@ -14,6 +14,27 @@ This document describes the local MLOps infrastructure used by the
 The environment documented here is the local KinD + Helm stack. It is
 not a production-cloud architecture.
 
+### Reproducible deployment milestone — 2026-10-05
+
+The v1.0 rehearsal adds an isolated KinD cluster and a Terraform-managed Helm
+release, with pinned node/workload images, verified PostgreSQL/S3 snapshot restore,
+paired v17 inference, and declarative recovery from a controlled API image-pull
+failure. The packaged MLflow runtime was adopted by digest and validated against
+the live Registry, one model artifact and preserved PVC identities.
+
+Prefect and Streamlit remain Poetry host processes, with dedicated loopback ports
+and a separate Prefect profile/SQLite database. The operator confirmed dashboard
+operation and that the Prefect UI error disappeared after the auth fix. No flow
+execution or orchestration-history restoration is claimed by that UI observation.
+RustFS still requires S3 credentials; the local Prefect server's unauthenticated
+loopback access is not a cloud access-control design.
+
+The original v0.3 cluster continues longitudinal monitoring independently. Its
+manual rollout and port-forward supervisors are distinct from the Terraform/Helm
+rehearsal procedure. AWS infrastructure remains a planned blueprint, with no cloud
+resources deployed. Commands, exact identities, evidence and limits are in
+[`REPRODUCIBLE_DEPLOYMENT.md`](REPRODUCIBLE_DEPLOYMENT.md).
+
 ---
 
 ## 1. Architecture overview

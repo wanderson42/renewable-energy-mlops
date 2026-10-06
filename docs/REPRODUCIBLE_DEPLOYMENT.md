@@ -179,9 +179,10 @@ dumps do banco e artefatos do modelo não devem ser adicionados ao Git.
 - [x] Automação de deployment local executada: plano, apply, rollout e gate.
 - [ ] Blueprint AWS validado e testado com mocks, com limitações explícitas.
 
-A navegação no Prefect após a correção de auth ainda aguarda confirmação;
-os gates de inicialização não comprovam browser E2E. O dashboard foi informado
-como funcional pelo operador, sem evidência detalhada de cada interação.
+O operador confirmou que o erro na página Prefect desapareceu após a correção
+de auth, e informou funcionamento do dashboard. Esses relatos complementam
+os gates; não equivalem a browser E2E automatizado nem execução de flows no
+Prefect novo. Não há evidência detalhada de cada interação do dashboard.
 
 ## 7. Inventário coletado e perfil Helm
 
@@ -1079,7 +1080,8 @@ clientes em **primeiro plano**, no Python do host para a supervisão e no
 ambiente Poetry para os serviços e SDKs. Não altera o chart, Terraform ou
 o deployment existente. Esta seção descreve o procedimento preparado;
 a execução original foi exercitada pelo operador (seção 20), e o gate corrigido
-passou no host (seção 21). A navegação no Prefect ainda aguarda confirmação.
+passou no host (seção 21). O operador também confirmou o desaparecimento do
+erro da página Prefect após essa execução.
 
 | Serviço do ensaio | Endereço local | Origem |
 |---|---|---|
@@ -1202,7 +1204,7 @@ também anuncia o método de auth por truthiness, que trata a string vazia como
 falsa. Esse erro de configuração explica a falha esperada nas consultas sem
 Authorization; a captura do operador não registra os códigos HTTP dessas
 consultas. O gate corrigido foi confirmado em execução, conforme a seção 21;
-a navegação no navegador permanece pendente.
+o operador confirmou em seguida o desaparecimento do erro no navegador.
 
 A correção deixa os três campos de auth ausentes do ambiente filho
 (`PREFECT_API_KEY`, `PREFECT_API_AUTH_STRING`, `PREFECT_SERVER_API_AUTH_STRING`),
@@ -1246,11 +1248,15 @@ orquestração; o procedimento não cria runs nem restaura o histórico Prefect.
 A evidência sanitizada está em
 [`evidence/client_gate_recovery_2026-10-05.json`](evidence/client_gate_recovery_2026-10-05.json).
 O recibo conserva `browser_e2e="not exercised by this gate"` para Prefect e
-Streamlit. O operador havia informado funcionamento do dashboard, mas ainda
-não confirmou a navegação no Prefect após a correção. Tampouco há evidência
+Streamlit. O operador informou funcionamento do dashboard e confirmou em
+05/10/2026, às 21:05:56 UTC−03, que o erro da página Prefect desapareceu.
+O relato valida a recuperação observada da interface; não demonstra execução
+de flows nem uma suíte completa de browser E2E. Tampouco há evidência
 nova de encerramento/reinício do launcher ou de disponibilidade contínua.
-O marco de configuração e inicialização está exercitado; a confirmação visual
-do Prefect continua pendente antes de consolidar o cliente como validado.
+O marco de configuração e inicialização está exercitado, com recuperação da
+página Prefect confirmada pelo operador. A síntese curada foi incorporada ao
+[notebook principal](../notebooks/renewable-energy-mlops.ipynb), na seção P10.
+O blueprint AWS permanece pendente; a v1.0 não está encerrada.
 
 ## Referências do projeto
 

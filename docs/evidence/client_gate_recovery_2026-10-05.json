@@ -35,9 +35,9 @@
   "prefect_database_file_present": true,
   "dashboard_health_http_status": 200,
   "dashboard_browser_observation": "working in previous operator report; not re-observed in this gate receipt",
-  "prefect_browser_observation": "post-fix navigation confirmation pending",
+  "prefect_browser_observation": "operator confirmed that the Prefect page error disappeared after the fix",
   "prefect_ui_data_query_gate": "passed",
-  "fix_host_validation": "HTTP configuration and read-only data query passed; browser confirmation pending",
+  "fix_host_validation": "HTTP configuration and read-only data query passed; Prefect page recovery confirmed by operator",
   "scope": "local services, effective app settings and read-only client integrations; no browser E2E claim",
   "urls": {
     "api": "http://127.0.0.1:18000",
@@ -53,5 +53,10 @@
     "data_query_http_status": 200,
     "browser_e2e": "not exercised by this gate"
   },
-  "dashboard_browser_e2e": "not exercised by this gate"
+  "dashboard_browser_e2e": "not exercised by this gate",
+  "operator_browser_confirmation": {
+    "reported_at": "2026-10-05T21:05:56-03:00",
+    "prefect_page_error_disappeared": true,
+    "scope": "manual operator report; no automated browser suite or flow execution evidenced"
+  }
 }
