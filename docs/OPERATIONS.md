@@ -225,8 +225,12 @@ Validação histórica consolidada da v0.3 em 05/10/2026:
 2 warnings
 ```
 
-Não representa uma nova execução da suíte global após os checks v1.0; a evidência
-de Helm/Terraform/scripts está no runbook de reprodução.
+Esse resultado histórico permanece preservado. Após o merge da implementação
+v1.0, o CI da `main` em `2b07c40` registrou **225 passed, 1 skipped, 2 warnings;
+56 subtests passed**, com `py314: OK`. O teste ignorado exige Terraform e passou
+no job Terraform local separado. Os subtestes e os testes IaC não são somados ao
+total de 225. Jobs, revisões e escopo estão no
+[recibo de consolidação](evidence/v1_consolidation_2026-10-05.json).
 
 Checks de estilo/whitespace:
 

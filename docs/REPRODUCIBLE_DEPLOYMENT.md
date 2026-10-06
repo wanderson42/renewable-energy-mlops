@@ -23,8 +23,17 @@ plano final `No changes`. O cliente isolado passou pelos gates SDK/HTTP;
 o operador confirmou o funcionamento do dashboard e a recuperação da UI
 Prefect. O blueprint AWS passou por validação de configuração, testes com
 mocks e análise estática em CI, com sete testes também aprovados no host.
-Não houve provisionamento AWS. A revisão final e a entrega por PR estão
-em andamento.
+Não houve provisionamento AWS. A implementação foi integrada à `main` pelo
+[PR #4](https://github.com/wanderson42/renewable-energy-mlops/pull/4), revisão
+`2b07c40`, em 05/10/2026 no fuso America/Belem. O escopo de implementação da
+v1.0 está concluído: deployment local exercitado e blueprint AWS validado.
+O [recibo de consolidação](evidence/v1_consolidation_2026-10-05.json) registra
+os quatro workflows aprovados após o merge, com 225 testes de software
+aprovados, um ignorado e dois warnings.
+
+As seções numeradas preservam a sequência histórica da implementação: campos
+pendentes em uma etapa antiga descrevem aquele momento. As
+[notas da v1.0](RELEASE_v1_0_0.md) apresentam o fechamento e seus limites.
 
 A v0.3 continua em acompanhamento longitudinal. Seu cluster e seu Registry são
 a referência operacional; os ensaios de reprodução usam um cluster separado.
@@ -37,8 +46,10 @@ a referência operacional; os ensaios de reprodução usam um cluster separado.
 | AWS | Arquitetura Terraform para VPC, EKS, S3, RDS e IAM | Validação estática e testes com mocks; sem alegação de deployment AWS |
 
 O projeto não depende de despesas com recursos AWS. LocalStack é opcional e não
-é requisito para concluir a v1.0. O deployment local e o blueprint AWS serão
-entregues nessa ordem, reaproveitando o chart e os gates existentes.
+é requisito para concluir a v1.0. O deployment local e o blueprint AWS foram
+entregues nessa ordem, reaproveitando o chart e os gates existentes. A arquitetura
+local está em [INFRASTRUCTURE.md](INFRASTRUCTURE.md); o desenho AWS e sua relação
+com o HCL estão em [AWS_BLUEPRINT.md](AWS_BLUEPRINT.md).
 
 ## 2. Proveniência da base
 
@@ -1260,8 +1271,9 @@ nova de encerramento/reinício do launcher ou de disponibilidade contínua.
 O marco de configuração e inicialização está exercitado, com recuperação da
 página Prefect confirmada pelo operador. A narrativa detalhada está no [notebook da branch](../notebooks/operations/reproducible_deployment_v1_0.ipynb). A síntese curada foi incorporada ao
 [notebook principal](../notebooks/renewable-energy-mlops.ipynb), na seção P10.
-O blueprint AWS foi declarado e validado em CI/mocks na etapa abaixo; a revisão
-final da v1.0 continua em andamento.
+O blueprint AWS foi declarado e validado em CI/mocks na etapa abaixo. A
+implementação foi integrada à `main`; o recibo de consolidação no início deste
+documento registra o fechamento do escopo.
 
 ## 22. Blueprint AWS sem provisionamento — 05/10/2026
 

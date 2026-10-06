@@ -4,10 +4,10 @@
 [![CI](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml/badge.svg)](https://github.com/wanderson42/renewable-energy-mlops/actions/workflows/ci_cd.yaml)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Poetry](https://img.shields.io/badge/Poetry-2.x-60A5FA?logo=poetry&logoColor=white)
-![Validation v0.3](https://img.shields.io/badge/v0.3-154%20tests%20passed-brightgreen)
+![Validation v1.0](https://img.shields.io/badge/v1.0-225%20tests%20passed-brightgreen)
 [![License](https://img.shields.io/github/license/wanderson42/renewable-energy-mlops)](LICENSE)
 
-Sistema MLOps end-to-end para **previsão horária Day-Ahead de geração eólica na Bahia**, cobrindo ingestão de dados, contratos de features, validação temporal, otimização de hiperparâmetros, experiment tracking, Model Registry, explicabilidade, monitoramento de drift, Continuous Training, model serving e operação local em Kubernetes.
+Sistema MLOps end-to-end para **previsão horária Day-Ahead de geração eólica na Bahia**, cobrindo ingestão de dados, contratos de features, validação temporal, otimização de hiperparâmetros, experiment tracking, Model Registry, explicabilidade, monitoramento de drift, Continuous Training, model serving, operação local em Kubernetes e infraestrutura declarativa com Terraform/Helm.
 
 O modelo aprende o **fator de capacidade (`target_fc`)** e reconstrói a previsão operacional em MW usando a capacidade disponível. O foco do projeto não é apenas treinar um regressor, mas preservar contratos consistentes entre **dados → treinamento → registry → serving → monitoring → retraining**.
 
@@ -15,37 +15,25 @@ O modelo aprende o **fator de capacidade (`target_fc`)** e reconstrói a previs�
 
 ## Visão geral
 
+### Ciclo de dados e modelos
+
 ```mermaid
-flowchart TD
-    OM[Open-Meteo] --> ING[Prefect Data Pipelines]
-    ONS[ONS] --> ING
-    ABE[ABEEólica / INFOVENTO] --> ING
-    ING --> VAL[Pandera + Data Contracts]
-    VAL --> FE[Feature Engineering]
-    FE --> GOLD[(RustFS / Gold Data Lake)]
-
-    GOLD --> MON[Monitoring Flow\nEvidently + Performance Drift]
-    GOLD --> TRAIN[Training Flow]
-
-    MON -->|CT explícito + mês completo + truth integral + drift| TRAIN
-    TRAIN --> OPT{Optimizer configurado?}
-    OPT -->|sim| OP[Optuna + TimeSeriesSplit]
-    OPT -->|não| TR[ModelTrainer]
-    OP --> TR
-    TR --> STACK[TemporalStackingRegressor\nLGBM + XGB + RF]
-    STACK --> OOT[Out-of-Time Evaluation]
-    OOT --> GATE[Quality Gate\nChampion vs Challenger]
-    GATE --> REG[(MLflow Model Registry\n@champion)]
-
-    REG --> API[FastAPI / Kubernetes]
-    API --> DASH[Streamlit\nDay-Ahead + XAI + Drift]
-    REG --> XAI[SHAP Artifacts]
+flowchart TB
+    OM["Open-Meteo"] --> ING["Prefect: ingestão e contratos"]
+    ONS["ONS"] --> ING
+    ABE["ABEEólica / INFOVENTO"] --> ING
+    ING --> FE["Features causais: contrato único"]
+    FE --> GOLD[("RustFS: dados Gold")]
+    GOLD --> TRAIN["Treino e validação temporal"]
+    GOLD --> MON["Monitoring: dados e desempenho"]
+    MON -->|CT solicitado, mês completo, truth integral e drift| TRAIN
+    TRAIN --> GATE["Quality Gate same-OOT"]
+    GATE -->|promoção aprovada| REG[("MLflow Registry: champion")]
+    REG --> API["FastAPI: versão e Run servidas"]
+    REG --> XAI["SHAP da mesma Run"]
+    API --> DASH["Streamlit: previsão, XAI e monitoring"]
     XAI --> DASH
-
-    GHA[GitHub Actions] --> GHCR[GHCR]
-    GHCR -. rollout manual na origem .-> API
-    GHCR -->|digest fixado no ensaio| DEPLOY[Terraform + Helm]
-    DEPLOY --> API
+    MON -->|relatórios históricos| DASH
 ```
 
 ### Dois lifecycles distintos
@@ -75,7 +63,9 @@ Treinar um novo modelo não implica publicar uma nova imagem, e publicar uma nov
 | Validação consolidada da v0.3 | **154 passed / 0 failed; resultado histórico de 05/10/2026** |
 | Deployment de ensaio | **KinD separado, Terraform/Helm, restore, serving pareado e recuperação declarativa** |
 | Cliente de ensaio | **Gate SDK/HTTP aprovado; dashboard e recuperação da UI Prefect confirmados pelo operador** |
-| v1.0 | **Em andamento; blueprint Terraform AWS em revisão, sem deployment cloud** |
+| v1.0 | **Implementação integrada à main: deployment local reproduzível e blueprint AWS validado sem provisionamento cloud** |
+| CI da main após o merge | **225 passed, 1 skipped, 2 warnings; 56 subtests passed** |
+| Terraform | **6 testes locais e 7 testes AWS com mocks; lint e controles de segurança selecionados aprovados** |
 | Warnings conhecidos | **2 — Evidently/NumPy, não bloqueantes** |
 
 Na etapa histórica anterior, o Challenger v12 apresentou `837.85 MW` de MAE OOT,
@@ -83,6 +73,8 @@ Na etapa histórica anterior, o Challenger v12 apresentou `837.85 MW` de MAE OOT
 promovida por um gate independente: v10 e v17 foram reavaliadas no mesmo OOT
 de setembro/2026. A v10 obteve `803.3723 MW`, e a v17, `787.1836 MW`.
 Esses resultados não substituem retroativamente as métricas dos benchmarks.
+
+A implementação da v1.0 foi integrada pelo [PR #4](https://github.com/wanderson42/renewable-energy-mlops/pull/4), commit `2b07c40`. O [recibo de consolidação](docs/evidence/v1_consolidation_2026-10-05.json) vincula os resultados aos workflows dessa revisão. O [notebook da infraestrutura](notebooks/operations/reproducible_deployment_v1_0.ipynb) preserva a análise detalhada. O acompanhamento longitudinal da v0.3 permanece em andamento.
 
 ### Experimento de simplificação — v0.2.0
 
@@ -299,6 +291,8 @@ A arquitetura, a configuração e a matriz completa de validação estão em
 | Dashboard | Streamlit + Plotly |
 | Containers | Docker, GHCR |
 | Kubernetes local | KinD + Helm |
+| Infraestrutura declarativa | Terraform: Helm local; VPC/EKS/S3/RDS/IAM no blueprint AWS |
+| Validação IaC | Terraform test com mocks, TFLint e controles Checkov selecionados |
 | Qualidade | pytest, Tox, Ruff |
 | CI | GitHub Actions |
 
@@ -306,80 +300,120 @@ A arquitetura, a configuração e a matriz completa de validação estão em
 
 ```text
 renewable-energy-mlops/
-├── .github/
-│   └── workflows/
-│       └── ci_cd.yaml                         # CI: testes, build e publicação da imagem no GHCR
+├── .github/workflows/
+│   ├── ci_cd.yaml                    # Testes e imagem FastAPI
+│   ├── helm.yaml                     # Chart e guards de infraestrutura
+│   ├── mlflow-image.yaml             # Runtime MLflow: build e smoke
+│   └── terraform.yaml                # IaC local e blueprint AWS
 ├── docs/
-│   ├── INFRASTRUCTURE.md                     # Arquitetura local, persistência, configuração e resiliência
-│   ├── MODEL_CARD.md                         # Contrato, métricas, limitações e governança do modelo
-│   └── OPERATIONS.md                         # Runbook operacional: monitoring, CT, validação e rollout
-├── helm/                                     # Infraestrutura Kubernetes local sobre KinD
-│   ├── Chart.yaml                            # Metadados do Helm Chart
-│   ├── values.yaml                           # Configuração pública/default dos serviços
+│   ├── AWS_BLUEPRINT.md               # Arquitetura AWS declarada
+│   ├── INFRASTRUCTURE.md              # Arquitetura local e persistência
+│   ├── MODEL_CARD.md                  # Contrato e governança do modelo
+│   ├── OPERATIONS.md                  # Operação da origem v0.3
+│   ├── REPRODUCIBLE_DEPLOYMENT.md      # Procedimento do ensaio v1.0
+│   ├── RELEASE_v1_0_0.md              # Notas do marco de portfólio
+│   └── evidence/                     # Recibos públicos sanitizados
+├── docker/mlflow/
+│   ├── Dockerfile
+│   ├── requirements.txt              # Pins do runtime separado
+│   └── verify_runtime.py
+├── helm/
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   ├── environments/
+│   │   ├── repro.yaml                # Imagens e perfil do ensaio
+│   │   └── repro-bootstrap.yaml      # Bootstrap sem API
 │   └── templates/
-│       ├── api.yaml                          # Deployment e Service do Model Serving FastAPI
-│       ├── mlflow.yaml                       # MLflow Tracking Server e artifact store
-│       ├── postgres.yaml                     # PostgreSQL e PVC do metadata store
-│       └── rustfs.yaml                       # RustFS S3-compatible e PVC do Data Lake
+│       ├── _helpers.tpl              # Contrato repository/tag/digest
+│       ├── api.yaml
+│       ├── mlflow.yaml
+│       ├── postgres.yaml
+│       └── rustfs.yaml
+├── infra/kind/repro.yaml              # Node e cluster fixados
 ├── notebooks/
 │   ├── experiments/
-│   │   ├── ensemble_simplification_v0_2_0.ipynb
-│   │   │                                      # Benchmark controlado de simplificação do ensemble
-│   │   └── training_window_comparison_benchmark.ipynb
-│   │                                          # Expanding × Rolling 24m × Rolling 12m
-│   ├── renewable-energy-mlops.ipynb          # Narrativa técnica curada e documentação central
-│   ├── extract_test.png                      # Evidência visual auxiliar da extração
-│   ├── streamlit_day_ahead.png               # Evidência visual do dashboard Day-Ahead
-│   └── streamlit_monitoring.png              # Evidência visual do dashboard de monitoring
+│   │   └── training_window_comparison_v0_2_0.ipynb
+│   ├── operations/
+│   │   ├── operational_governance_v0_3_0.ipynb
+│   │   └── reproducible_deployment_v1_0.ipynb
+│   ├── renewable-energy-mlops.ipynb    # Narrativa central e sínteses
+│   ├── streamlit_day_ahead.png
+│   └── streamlit_monitoring.png
 ├── scripts/
-│   └── port-forward-supervisor.sh            # Retry automático dos port-forwards críticos
-├── src/
-│   └── energy_mlops/
-│       ├── app/
-│       │   └── app.py                        # Aplicação/dashboard Streamlit
-│       ├── data/
-│       │   ├── build_features.py             # Integração dos dados e feature engineering
-│       │   ├── extract_energy.py             # Extração e preparação da geração do ONS
-│       │   ├── extract_weather.py            # Extração dos dados meteorológicos
-│       │   ├── feature_utils.py              # Contrato e seleção das features do modelo
-│       │   └── schema.py                     # Contratos Pandera dos dados
-│       ├── models/
-│       │   ├── interfaces.py                 # Interfaces de trainers e optimizers
-│       │   ├── optimize_stacking_ensemble.py # Otimização temporal com Optuna
-│       │   ├── temporal_stacking.py          # Stacking temporal com OOF causal
-│       │   ├── train_examples.py             # Exemplos compatíveis com a interface genérica
-│       │   └── train_stacking_ensemble.py    # Treino, métricas, SHAP e MLflow
-│       ├── pipelines/
-│       │   ├── backfill_flow.py              # Backfill histórico
-│       │   ├── data_ingestion_flow.py        # Ingestão de novos dados
-│       │   ├── monitoring_flow.py             # Drift, performance e gatilho de CT
-│       │   ├── training_flow.py               # Otimização, treino e Quality Gate
-│       │   └── utils.py                       # Utilitários compartilhados pelos flows
-│       ├── service/
-│       │   ├── main.py                        # API FastAPI e lifecycle do Champion
-│       │   ├── schema.py                      # Contratos Pydantic da API
-│       │   └── xai_artifacts.py               # Recuperação dos artifacts XAI
-│       └── config.py                          # Pydantic Settings e conexões externas
+│   ├── create-repro-cluster.sh
+│   ├── install-repro-terraform.sh
+│   ├── plan-repro.sh
+│   ├── review-repro-plan.py
+│   ├── inventory-repro-data.sh
+│   ├── inventory-repro-data.py
+│   ├── backup-repro.sh
+│   ├── snapshot-repro-objects.py
+│   ├── restore-repro.sh
+│   ├── repro-serving.py               # Serving e recuperação
+│   ├── build-mlflow-runtime.sh
+│   ├── test-mlflow-runtime.sh
+│   ├── validate-mlflow-runtime.py
+│   ├── repro-client.py                # Cliente e processos isolados
+│   ├── port-forward-supervisor.sh
+│   └── diagnose_monitoring.py
+├── terraform/environments/
+│   ├── local/                        # Helm no KinD de ensaio
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   ├── outputs.tf
+│   │   ├── versions.tf
+│   │   ├── .terraform.lock.hcl
+│   │   └── tests/
+│   │       ├── bootstrap.tftest.hcl
+│   │       └── fixtures/credentials.yaml
+│   └── aws/                          # Blueprint sem apply cloud
+│       ├── network.tf
+│       ├── eks.tf
+│       ├── storage.tf
+│       ├── database.tf
+│       ├── iam.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       ├── versions.tf
+│       ├── .terraform.lock.hcl
+│       ├── .tflint.hcl
+│       └── tests/blueprint.tftest.hcl
+├── src/energy_mlops/
+│   ├── app/                          # Dashboard Streamlit
+│   ├── data/                         # Extração, features e contratos
+│   ├── models/                       # Trainers, optimizer e stacking
+│   ├── pipelines/                    # Prefect e Quality Gate
+│   ├── service/                      # FastAPI e artefatos XAI
+│   └── config.py
 ├── tests/
-│   ├── data/                                  # Features, schemas e causalidade temporal
+│   ├── data/
 │   ├── infra/
-│   │   └── test_port_forward_supervisor.py   # Retry, argumentos e encerramento seguro do supervisor
-│   ├── models/                                # Stacking, optimizer e treinamento
-│   ├── pipelines/                             # Flows, monitoring e Quality Gate
-│   ├── service/                               # API, serving e XAI
-│   ├── conftest.py                            # Fixtures compartilhadas
-│   └── test_config.py                         # Contrato central de configuração
-├── CITATION.cff                              # Metadados de citação do repositório
-├── Dockerfile                                # Imagem do serviço FastAPI
-├── LICENSE                                   # Licença MIT
-├── Makefile                                  # Automação de serviços, portas, testes e validação
-├── pyproject.toml                            # Dependências Poetry e ferramentas
-├── poetry.lock                               # Lockfile reproduzível do ambiente Python
-├── tox.ini                                   # Suíte isolada de qualidade
-└── README.md                                 # Landing page e Quick Start
+│   │   ├── test_create_repro_cluster.py
+│   │   ├── test_helm_chart.py
+│   │   ├── test_mlflow_runtime_gate.py
+│   │   ├── test_port_forward_supervisor.py
+│   │   ├── test_repro_client.py
+│   │   ├── test_repro_data_inventory.py
+│   │   ├── test_repro_restore.py
+│   │   ├── test_repro_serving.py
+│   │   └── test_repro_snapshot.py
+│   ├── models/
+│   ├── pipelines/
+│   ├── service/
+│   ├── conftest.py
+│   └── test_config.py
+├── .env.example
+├── CITATION.cff
+├── Dockerfile                        # Imagem FastAPI
+├── LICENSE
+├── Makefile
+├── pyproject.toml
+├── poetry.lock
+├── tox.ini
+└── README.md
 ```
 
-Datasets Parquet reais, secrets, logs, caches, banco SQLite auxiliar, outputs locais de SHAP e evidências E2E não fazem parte do repositório publicado.
+A árvore mostra os arquivos principais versionados. Datasets Parquet reais, secrets, state/plans Terraform, kubeconfig, snapshots, bancos locais e logs permanecem fora do Git. Recibos JSON sanitizados e imagens documentais são públicos.
 
 ## Quick Start
 
@@ -404,7 +438,7 @@ cp .env.example .env
 
 Preencha o `.env` local com as credenciais e endpoints do ambiente. Secrets reais não devem ser versionados.
 
-### Operação do ambiente local
+### Operação da origem v0.3
 
 Com o cluster KinD e os workloads Helm provisionados:
 
@@ -440,22 +474,76 @@ make stop-ports
 
 O runbook completo está em [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
-A fase v1.0 já exercitou, em um KinD separado, provisionamento por Terraform/Helm,
-restauração, serving pareado da v17 e recuperação declarativa de uma falha de
-pull, com PVCs preservados e plano final sem mudanças. O runtime MLflow foi
-empacotado, publicado no GHCR e validado no ensaio por digest, com Registry e
-leitura/hash de artefato aprovados. `make repro-client` prepara Prefect e dashboard
-em portas e estado próprios, usando o ambiente Poetry. O primeiro startup confirmou
-SDKs, modelo e artefato; o operador informou que o dashboard funcionou. Após corrigir
-a autenticação vazia do Prefect, os settings HTTP da UI e a consulta ao banco
-passaram no host; o operador confirmou que o erro da interface desapareceu.
-O blueprint AWS está em [`terraform/environments/aws`](terraform/environments/aws),
-com rede, EKS, S3, RDS e IAM. `make aws-blueprint-check` valida a configuração e
-executa testes com mocks, sem credenciais ou provisionamento AWS. A arquitetura,
-as fronteiras de autenticação e as integrações ainda necessárias estão em
-[`docs/AWS_BLUEPRINT.md`](docs/AWS_BLUEPRINT.md). O escopo e as evidências locais
-e os critérios de aceitação estão em
-[`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md).
+### Reprodução local v1.0
+
+O procedimento usa um KinD separado e um snapshot privado da origem. Esse snapshot
+preserva metadata PostgreSQL, dados/artefatos RustFS e a identidade do modelo;
+ele não acompanha o repositório. Sem o snapshot, o bootstrap instala serviços,
+mas a v17 só poderá ser servida após recuperar seu estado ou executar um novo
+lifecycle de treinamento com seus próprios dados e identidade.
+
+| Etapa | Comando ou referência |
+|---|---|
+| Ferramentas e cluster isolado | `make repro-tools`; `make repro-cluster` |
+| Plano do bootstrap | `make repro-plan`; revisar o plano antes do apply do runbook |
+| Inventário, captura e restore | `make repro-inventory`; `make repro-backup`; `make repro-restore` |
+| Habilitação e gate do serving | `make repro-serving-plan`; `make repro-serving-apply`; `make repro-validate` |
+| Cliente no host | `make repro-client`; manter o terminal aberto |
+
+Essa tabela orienta a navegação; o [runbook](docs/REPRODUCIBLE_DEPLOYMENT.md)
+detalha credenciais locais, ordem dos passos, pré-condições e limites de cada
+operação. O ensaio preservou a v17/Run, 251 objetos S3 e os PVCs; as três
+previsões pareadas tiveram diferença máxima zero. Prefect usa estado novo e
+não restaura o histórico da orquestração.
+
+### Arquitetura local gerenciada por Terraform/Helm
+
+```mermaid
+flowchart TB
+    TF["Terraform: helm_release.mlops"] --> HELM["Helm: chart e valores por digest"]
+    HELM --> SERVICES
+    subgraph KIND["KinD de ensaio: energy-mlops-repro"]
+      subgraph SERVICES["Namespace e release: energy-mlops-repro"]
+        API["FastAPI: champion v17"] --> ML["MLflow: Tracking e Registry"]
+        API --> S3["RustFS: Gold e artefatos"]
+        ML --> PG["PostgreSQL: metadata"]
+        ML --> S3
+        PG --> PGV[("postgres-pvc")]
+        S3 --> S3V[("rustfs-pvc")]
+      end
+    end
+    subgraph HOST["Cliente Poetry no host: loopback"]
+      DASH["Streamlit: 18501"] -->|API: 18000| API
+      DASH -->|MLflow: 15000| ML
+      DASH -->|S3: 19000| S3
+      PF["Prefect: 14200; SQLite isolado"]
+    end
+```
+
+Terraform administra a release; Helm administra os objetos do chart. O KinD é
+criado pelo script versionado. Prefect e Streamlit executam no host via Poetry;
+as setas mostram os acessos da aplicação por port-forward. O servidor Prefect
+possui seu próprio SQLite, sem ligação ao banco PostgreSQL do MLflow.
+
+O snapshot restaura PostgreSQL e RustFS antes de habilitar a API. A atualização
+por imagem/digest termina com rollout e gates de modelo/inferência. O operador
+inicia o apply; Actions executa validação, build e publicação no GHCR.
+
+### Blueprint AWS gratuito para validação
+
+O root [terraform/environments/aws](terraform/environments/aws) declara VPC,
+EKS, S3, RDS e IAM. Seu desenho de rede e identidade está em
+[AWS_BLUEPRINT.md](docs/AWS_BLUEPRINT.md). Foi validado em CI e no host com mocks,
+sem conta, plano autenticado ou recursos AWS.
+
+```bash
+make repro-tools          # se a CLI Terraform ainda não estiver instalada
+make aws-blueprint-check  # fmt, init, validate e testes com mocks
+```
+
+Terraform é uma CLI separada do Poetry. Esse target não executa apply AWS.
+As integrações necessárias para um eventual deployment cloud estão documentadas;
+a v1.0 fecha o escopo de portfólio com execução local e blueprint cloud.
 
 ## Principais endpoints da API
 
@@ -506,9 +594,20 @@ py314: OK
 
 Os warnings conhecidos são provenientes de compatibilidade interna Evidently/NumPy e não representam falhas da aplicação.
 
-Esse resultado não é uma contagem atual de toda a branch v1.0. Os checks adicionais
-de Helm, Terraform e scripts operacionais têm evidências próprias no
-[runbook de reprodução](docs/REPRODUCIBLE_DEPLOYMENT.md).
+No CI da `main`, revisão `2b07c40` integrada pelo PR #4:
+
+```text
+225 passed, 1 skipped, 2 warnings
+56 subtests passed
+py314: OK
+```
+
+O único teste ignorado exige a CLI Terraform, ausente no job Python; ele passou
+no job Terraform local separado. Os subtestes e os testes Terraform não são
+somados ao total de 225. Helm, build/smoke da imagem MLflow, TFLint e 20 controles
+Checkov selecionados também passaram. O [recibo de consolidação](docs/evidence/v1_consolidation_2026-10-05.json)
+registra as revisões, jobs e limites; os procedimentos estão no
+[runbook](docs/REPRODUCIBLE_DEPLOYMENT.md).
 
 Checks adicionais:
 
@@ -566,10 +665,11 @@ Documentos adicionais:
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — arquitetura local, persistência, configuração e resiliência.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
 - [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md) — Terraform/Helm, restore, digests, recuperação e cliente isolado.
-- [`docs/AWS_BLUEPRINT.md`](docs/AWS_BLUEPRINT.md) — arquitetura Terraform AWS, validação com mocks e fronteiras ainda não exercitadas na nuvem.
+- [`docs/AWS_BLUEPRINT.md`](docs/AWS_BLUEPRINT.md) — desenhos de rede e identidade AWS, relação com HCL e limites de validação.
+- [`docs/RELEASE_v1_0_0.md`](docs/RELEASE_v1_0_0.md) — notas do fechamento da v1.0 e evidências para publicação da release.
 - [`notebooks/operations/reproducible_deployment_v1_0.ipynb`](notebooks/operations/reproducible_deployment_v1_0.ipynb) — decisões, procedimentos e evidências da branch de deployment reproduzível; síntese no notebook principal.
 - [`notebooks/operations/operational_governance_v0_3_0.ipynb`](notebooks/operations/operational_governance_v0_3_0.ipynb) — governança same-OOT e protocolo longitudinal da v0.3.
-- [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble.
+- O benchmark de simplificação do ensemble está preservado na narrativa do notebook principal; apenas notebooks versionados constam na árvore acima.
 - [`notebooks/experiments/training_window_comparison_v0_2_0.ipynb`](notebooks/experiments/training_window_comparison_v0_2_0.ipynb) — benchmark Expanding × Rolling 24m × Rolling 12m.
 
 ## Packaging scope
@@ -580,7 +680,9 @@ Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MA
 
 ## Limitações atuais
 
-- O ambiente validado é local, baseado em KinD com deployment por Terraform/Helm no ensaio; o blueprint AWS permanece em desenvolvimento, sem deployment cloud.
+- O ambiente exercitado é local: KinD e Terraform/Helm no ensaio. O blueprint AWS está declarado e validado em configuração/mocks, sem deployment cloud.
+- A reprodução da identidade histórica v17 depende do snapshot privado; o repositório não distribui dados ou pesos de modelo.
+- O cliente foi validado por SDK/HTTP e conferência manual das interfaces; flows/workers no Prefect do ensaio e browser E2E automatizado não foram exercitados.
 - O nome atual do Registered Model (`ensemble_lgb_xgb_rf_bahia`) reflete a arquitetura histórica e poderá futuramente evoluir para um nome orientado ao produto.
 - Compatibilidade com métricas históricas `*_YYYY` ainda é necessária enquanto modelos antigos permanecerem operacionalmente relevantes.
 - A vantagem observada da Expanding Window foi medida em um OOT específico e precisa ser reavaliada longitudinalmente.
@@ -588,17 +690,27 @@ Por isso não são necessários `setup.py`, `requirements.txt` redundante ou `MA
 - A persistência foi validada para reinícios de pods/deployments e do container control-plane do KinD, não para deleção de PVC, `kind delete cluster` ou perda do host.
 - O projeto é educacional e não substitui processos de validação, segurança e governança exigidos em operação energética real.
 
-## Roadmap
+## Marcos e continuidade
 
-- repetir o benchmark de janelas com novos meses OOT fechados para avaliar a estabilidade da vantagem observada da **Expanding Window**;
-- reavaliar janelas mais longas somente quando houver histórico canônico suficiente de `capacidade_mw`;
-- acompanhar longitudinalmente a estabilidade de `LGBM + XGB + RF` e `LGBM + XGB` em novos períodos OOT;
-- definir uma política explícita de simplificação por número de estimadores apenas se isso se tornar necessário no lifecycle operacional;
-- medir custo de treinamento, latência de inferência e tamanho dos artifacts quando esses fatores passarem a ser relevantes para a decisão arquitetural;
-- evoluir o Registered Model para uma identidade orientada ao produto, independente da arquitetura;
-- remover a compatibilidade de métricas `*_YYYY` quando nenhum modelo operacional relevante depender mais do contrato histórico;
-- ampliar o ensaio de backup/restore já validado entre dois clusters KinD para outros cenários de recuperação, conforme necessário;
-- revisar e consolidar o blueprint Terraform AWS e seu contrato de integração, mantendo KinD + Helm como ambiente local reproduzível e a fase Cloud/IaC separada da evolução do modelo.
+| Marco | Resultado |
+|---|---|
+| v0.1 — sistema funcional | Lifecycle MLOps executável; evidências históricas preservadas |
+| v0.2 — experimentação rigorosa | Snapshot/OOT controlados, ablações e comparação de janelas temporais |
+| v0.3 — governança operacional | Promoção same-OOT, monitoring real e caminhos Client/E2E exercitados |
+| Otimização Docker | Redução local de 67,46%; build/publicação e smoke por digest validados |
+| v1.0 — IaC e deployment reproduzível | Implementação concluída e integrada: reprodução local + blueprint AWS validado |
+
+O marco v1.0 encerra o escopo de implementação do portfólio. Publicar uma etiqueta
+ou release é uma etapa de distribuição do marco, não nova evidência operacional.
+O acompanhamento longitudinal da v0.3 continua: revisões após 7 e 14 dias completos
+de geração observada, depois o mês fechado de outubro, mantendo setembro como
+referência. Isso não garante estabilidade futura nem dispara CT automaticamente.
+
+A avaliação atual usa meteorologia observada/reanálise; a validação das previsões
+day-ahead efetivamente emitidas requer guardá-las e pareá-las posteriormente com
+geração observada. Novos OOTs, medições de latência/custo, outros cenários de
+recuperação e um eventual deployment cloud são extensões condicionadas a uma
+necessidade concreta, fora do critério de fechamento desta versão.
 
 ## Licença
 
