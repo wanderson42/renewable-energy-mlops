@@ -15,6 +15,8 @@ O modelo aprende o **fator de capacidade (`target_fc`)** e reconstrói a previs�
 
 ## Visão geral
 
+Para uma leitura executiva do problema, dos resultados e do caminho para produção, consulte o **[resumo para stakeholders](docs/STAKEHOLDER_BRIEF.md)**. O documento reúne a justificativa para Bahia e Morro do Chapéu, a interpretação das métricas e referências sobre complementaridade eólica–solar.
+
 ### Ciclo de dados e modelos
 
 ```mermaid
@@ -157,6 +159,35 @@ O contrato atual separa claramente as fontes:
 A capacidade é aplicada causalmente: cada timestamp utiliza somente o checkpoint mais recente já disponível. Não são usados interpolação linear nem backward fill. O histórico canônico de capacidade utilizado na v0.2.0 começa em **2024-03-21**.
 
 Na extração do ONS, horas com registros incompletos de geração são descartadas antes da agregação estadual; valores ausentes de usinas não são transformados em `0 MW`.
+
+## ETL — extração, transformação e carga
+
+O fluxo mensal [`data_ingestion_flow`](src/energy_mlops/pipelines/data_ingestion_flow.py), orquestrado pelo **Prefect**, transforma as fontes externas em um **snapshot Gold auditado**, pronto para a construção dos conjuntos temporais de treinamento e avaliação.
+
+| Etapa | Procedimento implementado |
+|---|---|
+| **Extract — extração** | Consulta a Open-Meteo Archive API para velocidade e direção do vento a 100 m e temperatura a 2 m em Morro do Chapéu; lê o Parquet mensal do ONS, filtra a geração eólica da Bahia e agrega as horas com registros válidos. As tarefas de extração possuem retries e os resultados passam pelos contratos `WeatherSchema` e `EnergySchema`. |
+| **Transform — transformação** | Alinha os timestamps em UTC, verifica se a série ONS alcança o fechamento do mês e faz um `inner join` por `date`. Aplica os checkpoints versionados de capacidade ABEEólica/INFOVENTO conforme sua disponibilidade histórica; calcula `target_fc` (geração/capacidade, limitado a `[0, 1]`), a relação vento/temperatura, os ciclos de hora e mês e a média móvel causal de vento de três horas. |
+| **Load — carga** | Audita o snapshot e grava o dataset em Parquet na camada Gold do RustFS, pelo endpoint compatível com S3. Em caso de falha na escrita, salva o arquivo no disco local e retorna o caminho efetivamente utilizado. |
+
+Antes da carga, [`audit_gold_snapshot`](src/energy_mlops/data/snapshot_validation.py) verifica ordenação temporal, timestamps duplicados, contrato de features, valores de geração e capacidade e consistência de `target_fc`. Também registra lacunas horárias e confere se a capacidade aplicada corresponde ao checkpoint causalmente disponível. Essa auditoria torna explícita a qualidade do dataset entregue ao treinamento.
+
+### Executar a ingestão mensal
+
+Com o ambiente Python e o `.env` configurados conforme o [Quick Start](#quick-start), execute, por exemplo, a ingestão de janeiro de 2025:
+
+```bash
+poetry run python -m energy_mlops.pipelines.data_ingestion_flow --year 2025 --month 1
+```
+
+O parâmetro `RUSTFS_BUCKET` define o bucket de destino. A saída segue estes caminhos:
+
+```text
+RustFS: s3://<RUSTFS_BUCKET>/gold/dataset_renewable_energy_2025_01.parquet
+Fallback local: data/dataset_renewable_energy_2025_01.parquet
+```
+
+O fluxo valida o fechamento da publicação mensal do ONS antes de gerar o Gold; lacunas internas são registradas pela auditoria. A ingestão prepara os dados, enquanto treinamento e promoção do modelo seguem seus próprios fluxos e critérios de governança.
 
 ## Arquitetura de modelagem
 
@@ -312,6 +343,7 @@ renewable-energy-mlops/
 │   ├── OPERATIONS.md                  # Operação da origem v0.3
 │   ├── REPRODUCIBLE_DEPLOYMENT.md      # Procedimento do ensaio v1.0
 │   ├── RELEASE_v1_0_0.md              # Notas do marco de portfólio
+│   ├── STAKEHOLDER_BRIEF.md            # Resumo executivo e referências
 │   └── evidence/                     # Recibos públicos sanitizados
 ├── docker/mlflow/
 │   ├── Dockerfile
@@ -661,6 +693,7 @@ O README funciona como landing page. A análise detalhada do projeto, decisões 
 
 Documentos adicionais:
 
+- [`docs/STAKEHOLDER_BRIEF.md`](docs/STAKEHOLDER_BRIEF.md) — resumo para stakeholders: contexto, desempenho, operação, caminho para produção e referências.
 - [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) — objetivo, contrato, métricas, limitações e governança do modelo.
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — arquitetura local, persistência, configuração e resiliência.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
