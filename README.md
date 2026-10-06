@@ -562,6 +562,7 @@ Documentos adicionais:
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — arquitetura local, persistência, configuração e resiliência.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook local, validação, monitoring, CT e rollout.
 - [`docs/REPRODUCIBLE_DEPLOYMENT.md`](docs/REPRODUCIBLE_DEPLOYMENT.md) — Terraform/Helm, restore, digests, recuperação e cliente isolado.
+- [`notebooks/operations/reproducible_deployment_v1_0.ipynb`](notebooks/operations/reproducible_deployment_v1_0.ipynb) — decisões, procedimentos e evidências da branch de deployment reproduzível; síntese no notebook principal.
 - [`notebooks/operations/operational_governance_v0_3_0.ipynb`](notebooks/operations/operational_governance_v0_3_0.ipynb) — governança same-OOT e protocolo longitudinal da v0.3.
 - [`notebooks/experiments/ensemble_simplification_v0_2_0.ipynb`](notebooks/experiments/ensemble_simplification_v0_2_0.ipynb) — benchmark controlado de simplificação do ensemble.
 - [`notebooks/experiments/training_window_comparison_v0_2_0.ipynb`](notebooks/experiments/training_window_comparison_v0_2_0.ipynb) — benchmark Expanding × Rolling 24m × Rolling 12m.

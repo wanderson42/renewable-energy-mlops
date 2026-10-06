@@ -1254,7 +1254,7 @@ O relato valida a recuperação observada da interface; não demonstra execuçã
 de flows nem uma suíte completa de browser E2E. Tampouco há evidência
 nova de encerramento/reinício do launcher ou de disponibilidade contínua.
 O marco de configuração e inicialização está exercitado, com recuperação da
-página Prefect confirmada pelo operador. A síntese curada foi incorporada ao
+página Prefect confirmada pelo operador. A narrativa detalhada está no [notebook da branch](../notebooks/operations/reproducible_deployment_v1_0.ipynb). A síntese curada foi incorporada ao
 [notebook principal](../notebooks/renewable-energy-mlops.ipynb), na seção P10.
 O blueprint AWS permanece pendente; a v1.0 não está encerrada.
 
